@@ -63,10 +63,42 @@ class App extends Component {
     page: 'dashboard', folder: null, docId: null, q: '', sq: '', tag: null, filterOpen: false, menuId: null,
     showAllFolders: false, draft: null, draftBase: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
     userMenu: false, rev: null, saving: false,
-    openFolders: (() => { try { return JSON.parse(localStorage.getItem('rackbook.openFolders')) || []; } catch { return []; } })(),
+    sbWidth: (() => { try { const w = Number(localStorage.getItem('rackbook.sbWidth')); return w >= 200 && w <= 480 ? w : 248; } catch { return 248; } })(),
+    openNodes: (() => {
+      try {
+        const v = JSON.parse(localStorage.getItem('rackbook.openNodes'));
+        if (v && typeof v === 'object') return v;
+        const old = JSON.parse(localStorage.getItem('rackbook.openFolders'));
+        return Array.isArray(old) ? Object.fromEntries(old.map(id => [id, true])) : {};
+      } catch { return {}; }
+    })(),
   };
 
   // ---------- Lebenszyklus ----------
+  componentDidUpdate(_, prev) {
+    // Aktives Element im Seitenbaum sichtbar halten
+    if (prev.page !== this.state.page || prev.docId !== this.state.docId || prev.folder !== this.state.folder) {
+      requestAnimationFrame(() => {
+        const el = document.querySelector('.sb-scroll .nav-item.folder.active');
+        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+      });
+    }
+  }
+  // Seitenleiste per Ziehen am rechten Rand verbreitern
+  startResize = e => {
+    e.preventDefault();
+    const startX = e.clientX, startW = this.state.sbWidth;
+    document.body.classList.add('resizing');
+    const move = ev => this.setState({ sbWidth: Math.min(480, Math.max(200, startW + ev.clientX - startX)) });
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      try { localStorage.setItem('rackbook.sbWidth', String(this.state.sbWidth)); } catch { /* egal */ }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
   componentDidMount() {
     setUnauthorizedHandler(() => this.sessionLost());
     this.boot();
@@ -183,11 +215,10 @@ class App extends Component {
     walk(null, 0);
     return out;
   }
-  toggleFolderOpen(id) {
-    const open = new Set(this.state.openFolders);
-    if (open.has(id)) open.delete(id); else open.add(id);
-    try { localStorage.setItem('rackbook.openFolders', JSON.stringify([...open])); } catch { /* egal */ }
-    this.setState({ openFolders: [...open] });
+  toggleNode(key, open) {
+    const openNodes = { ...this.state.openNodes, [key]: open };
+    try { localStorage.setItem('rackbook.openNodes', JSON.stringify(openNodes)); } catch { /* egal */ }
+    this.setState({ openNodes });
   }
   doc(id) { return this.state.docs.find(d => d.id === id); }
   isDirty() {
@@ -331,7 +362,7 @@ class App extends Component {
     try {
       const r = id ? await api('/folders/' + encodeURIComponent(id), { method: 'PATCH', body: v }) : await api('/folders', { method: 'POST', body: v });
       this.setState(s => ({ folders: id ? s.folders.map(f => (f.id === id ? r.folder : f)) : s.folders.concat(r.folder) }));
-      if (r.folder.parent && !this.state.openFolders.includes(r.folder.parent)) this.toggleFolderOpen(r.folder.parent);
+      if (r.folder.parent) this.toggleNode(r.folder.parent, true);
       this.flash(id ? 'Ordner gespeichert' : 'Ordner angelegt');
       return true;
     } catch (e) { this.fail(e); return false; }
@@ -522,7 +553,9 @@ class App extends Component {
       </button>`;
     const bms = s.docs.filter(d => d.bookmarked);
     return html`
-      <aside class=${'sidebar' + (expanded ? '' : ' collapsed')}>
+      <aside class=${'sidebar' + (expanded ? '' : ' collapsed')} style=${{ '--sb-w': s.sbWidth + 'px' }}>
+        ${expanded && html`<div class="sb-resize" role="separator" aria-orientation="vertical" aria-label="Breite der Seitenleiste ändern" title="Ziehen zum Verbreitern, Doppelklick zum Zurücksetzen"
+          onPointerDown=${this.startResize} onDblClick=${() => { this.setState({ sbWidth: 248 }); try { localStorage.removeItem('rackbook.sbWidth'); } catch { /* egal */ } }}></div>`}
         <div class="sb-scroll">
           <div class="sb-head">
             <button type="button" class="brand" onClick=${() => this.go('dashboard')} title="Dashboard">
@@ -570,27 +603,47 @@ class App extends Component {
       </aside>`;
   }
 
+  // Seitenbaum links: Ordner → Unterordner → Dokumente → Unterseiten (jede Ebene aufklappbar)
   renderFolderTree(expanded) {
     const s = this.state;
-    const curFolder = s.page === 'docs' ? s.folder : s.page === 'doc' && this.doc(s.docId) ? this.doc(s.docId).folder : null;
-    const autoOpen = new Set(curFolder ? this.folderChain(curFolder).map(f => f.id) : []);
-    const open = id => s.openFolders.includes(id) || autoOpen.has(id);
+    const curDoc = (s.page === 'doc' || s.page === 'edit') && this.doc(s.page === 'doc' ? s.docId : s.draft && s.draft.id);
+    const curFolder = s.page === 'docs' ? s.folder : curDoc ? curDoc.folder : null;
+    // Pfad zum aktuellen Ordner/Dokument automatisch aufklappen (solange nicht ausdrücklich zugeklappt)
+    const auto = new Set(curFolder ? this.folderChain(curFolder).map(f => f.id) : []);
+    if (curDoc) this.docChain(curDoc).forEach(d => auto.add('d:' + d.id));
+    const isOpen = key => (s.openNodes[key] !== undefined ? s.openNodes[key] : auto.has(key));
+    const pad = depth => (expanded ? { paddingLeft: (11 + depth * 14) + 'px' } : null);
+    const chev = (key, has) => (!expanded ? null : has
+      ? html`<span class="ms tree-chev" role="button" aria-label=${isOpen(key) ? 'Zuklappen' : 'Aufklappen'} onClick=${e => { stop(e); this.toggleNode(key, !isOpen(key)); }}>${isOpen(key) ? 'expand_more' : 'chevron_right'}</span>`
+      : html`<span class="tree-chev-space"></span>`);
     const items = [];
+    const walkDocs = (list, depth) => list.forEach(d => {
+      const kids = this.docChildren(d.id);
+      const key = 'd:' + d.id;
+      const active = s.page === 'doc' && s.docId === d.id;
+      items.push(html`
+        <button type="button" key=${key} class=${'nav-item folder tree-doc' + (active ? ' active' : '')} title=${d.title} style=${pad(depth)}
+          onClick=${() => { this.go('doc', { docId: d.id }); if (kids.length && s.openNodes[key] === undefined) this.toggleNode(key, true); }}>
+          <span class="ms">${kids.length ? 'auto_stories' : 'description'}</span>
+          ${expanded && html`<span class="grow">${d.title}</span>`}
+          ${chev(key, kids.length > 0)}
+        </button>`);
+      if (expanded && kids.length && isOpen(key)) walkDocs(kids, depth + 1);
+    });
     const walk = (p, depth) => this.subFolders(p).forEach(f => {
-      const kids = this.subFolders(f.id).length > 0;
+      const subs = this.subFolders(f.id);
+      const top = s.docs.filter(d => d.folder === f.id && !(d.parent && this.doc(d.parent))).sort((a, b) => a.title.localeCompare(b.title, 'de'));
       const count = s.docs.filter(d => this.folderSet(f.id).has(d.folder)).length;
       const active = s.page === 'docs' && s.folder === f.id;
       items.push(html`
-        <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '')} title=${this.folderPath(f.id)} style=${expanded ? { paddingLeft: (11 + depth * 14) + 'px' } : null}
-          onClick=${() => this.go('docs', { folder: f.id, tag: null, q: '' })}>
+        <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '')} title=${this.folderPath(f.id)} style=${pad(depth)}
+          onClick=${() => { this.go('docs', { folder: f.id, tag: null, q: '' }); if (s.openNodes[f.id] === undefined) this.toggleNode(f.id, true); }}>
           <span class="ms">${f.icon}</span>
           ${expanded && html`<span class="grow">${f.name}</span>`}
           ${expanded && html`<span class="count">${count}</span>`}
-          ${expanded && (kids
-            ? html`<span class="ms tree-chev" role="button" aria-label=${open(f.id) ? 'Zuklappen' : 'Aufklappen'} onClick=${e => { stop(e); this.toggleFolderOpen(f.id); }}>${open(f.id) ? 'expand_more' : 'chevron_right'}</span>`
-            : html`<span class="tree-chev-space"></span>`)}
+          ${chev(f.id, subs.length + top.length > 0)}
         </button>`);
-      if (expanded && kids && open(f.id)) walk(f.id, depth + 1);
+      if (expanded && isOpen(f.id)) { walk(f.id, depth + 1); walkDocs(top, depth + 1); }
     });
     walk(null, 0);
     return items;

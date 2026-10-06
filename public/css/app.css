@@ -30,7 +30,7 @@ h1, h2, h3 { margin: 0; }
 
 /* ---------- Layout ---------- */
 .shell { display: flex; height: 100vh; overflow: hidden; background: var(--bg); }
-.sidebar { width: 232px; flex-shrink: 0; background: #fbfbfc; border-right: 1px solid #eceef2; display: flex; flex-direction: column; transition: width .2s ease; }
+.sidebar { width: var(--sb-w, 248px); position: relative; flex-shrink: 0; background: #fbfbfc; border-right: 1px solid #eceef2; display: flex; flex-direction: column; transition: width .2s ease; }
 .sidebar.collapsed { width: 60px; }
 .sb-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 17px 12px 10px; display: flex; flex-direction: column; gap: 17px; }
 .sb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; }
@@ -390,7 +390,7 @@ select.input { cursor: pointer; }
 @media (max-width: 760px) {
   .container { padding: 18px 16px 40px; }
   .sidebar { width: 60px; }
-  .sidebar:not(.collapsed) { position: fixed; z-index: 40; height: 100vh; width: 232px; box-shadow: 0 0 40px rgba(0,0,0,.15); }
+  .sidebar:not(.collapsed) { position: fixed; z-index: 40; height: 100vh; width: min(var(--sb-w, 248px), 85vw); box-shadow: 0 0 40px rgba(0,0,0,.15); }
   .dtable-head, .dtable-row { grid-template-columns: minmax(0,1fr) 40px; }
   .dtable-head > :nth-child(2), .dtable-head > :nth-child(3), .dtable-row > :nth-child(2), .dtable-row > :nth-child(3) { display: none; }
   .editor-grid.split { grid-template-columns: minmax(0,1fr); }
@@ -413,3 +413,12 @@ select.input { cursor: pointer; }
 .doc-main .article { flex: none; }
 .field-chip select:disabled { opacity: .6; cursor: not-allowed; }
 .folder-row-parent { width: 150px; flex-shrink: 0; }
+
+.nav-item.tree-doc { font-size: 13px; color: var(--ink3); }
+.nav-item.tree-doc .ms { font-size: 16px; }
+.nav-item.tree-doc.active { color: var(--navy); }
+
+.sb-resize { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 5; }
+.sb-resize:hover, body.resizing .sb-resize { background: var(--acc-soft); }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .sidebar { transition: none; }

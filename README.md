@@ -7,6 +7,7 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 **Dokumentation**
 - Dashboard mit angepinnten Dokumenten, zuletzt bearbeiteten Dokumenten und offenen To-dos (`- [ ]` aus allen Dokumenten, direkt abhakbar)
 - Ordner mit **Unterordnern** (bis 5 Ebenen, frei anlegbar, mit Icon und Farbe), Tags, Tag-Filter, persönliche Lesezeichen
+- **Seitenbaum** in der Seitenleiste: Ordner, Unterordner, Dokumente und Unterseiten – jede Ebene aufklappbar, Seitenleiste per Ziehen verbreiterbar
 - **Unterseiten**: Dokumente lassen sich unter einem Hauptdokument anordnen (z. B. ein Projekt mit Unterseiten für Konfiguration, Backup, Runbooks); Brotkrumen-Pfad, Unterseiten-Liste, Verschieben und Löschen samt Unterseiten
 - Markdown-Editor mit Toolbar, Live-Vorschau, Zeilenumbruch, Schriftgröße, `Strg/⌘ + S`
 - Dokumentansicht mit Inhaltsverzeichnis, kopierbaren Code-Blöcken und abhakbaren Checklisten
