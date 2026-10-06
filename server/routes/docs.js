@@ -55,7 +55,7 @@ export function toDto(d) {
   return {
     id: d.id, title: d.title, folder: d.folder_id, parent: d.parent_id ?? null, tags: JSON.parse(d.tags || '[]'), content: d.content,
     pinned: !!d.pinned, bookmarked: !!d.bookmarked, version: d.version,
-    created: d.created_at, createdBy: d.created_by_name ?? null,
+    created: d.created_at, createdBy: d.created_by_name ?? null, createdById: d.created_by ?? null,
     updated: d.updated_at, updatedBy: d.updated_by_name ?? null, updatedVia: d.updated_via || 'web',
     reviewed: d.reviewed_at ?? null, deleted: d.deleted_at ?? null,
   };
@@ -87,7 +87,7 @@ export function insertDoc({ id, title, folder, parent = null, tags, content, pin
 
 // ---------- Ordner ----------
 r.get('/folders', (req, res) => {
-  res.json({ folders: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent FROM folders ORDER BY sort, name').all() });
+  res.json({ folders: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent, created_by AS createdById FROM folders ORDER BY sort, name').all() });
 });
 
 function folderInput(body, partial) {
@@ -115,9 +115,9 @@ r.post('/folders', editor, (req, res) => {
   while (folderExists(id)) id = `${base}-${i++}`;
   const parent = checkFolderParent(null, f.parent_id);
   const sort = (db.prepare('SELECT MAX(sort) AS m FROM folders').get().m ?? 0) + 1;
-  db.prepare('INSERT INTO folders (id, name, icon, hue, sort, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, f.name, f.icon, f.hue, sort, parent, Date.now());
+  db.prepare('INSERT INTO folders (id, name, icon, hue, sort, parent_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, f.name, f.icon, f.hue, sort, parent, req.user.id, Date.now());
   audit(req, 'folder.created', id, { name: f.name, parent });
-  res.status(201).json({ folder: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent FROM folders WHERE id = ?').get(id) });
+  res.status(201).json({ folder: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent, created_by AS createdById FROM folders WHERE id = ?').get(id) });
 });
 
 r.patch('/folders/:id', editor, (req, res) => {
@@ -127,13 +127,13 @@ r.patch('/folders/:id', editor, (req, res) => {
   const sets = Object.keys(f);
   if (sets.length) db.prepare(`UPDATE folders SET ${sets.map(k => `${k} = ?`).join(', ')} WHERE id = ?`).run(...sets.map(k => f[k]), req.params.id);
   audit(req, 'folder.updated', req.params.id, f);
-  res.json({ folder: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent FROM folders WHERE id = ?').get(req.params.id) });
+  res.json({ folder: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent, created_by AS createdById FROM folders WHERE id = ?').get(req.params.id) });
 });
 
 r.post('/folders/order', editor, (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
   tx(() => ids.forEach((id, i) => db.prepare('UPDATE folders SET sort = ? WHERE id = ?').run(i, id)));
-  res.json({ folders: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent FROM folders ORDER BY sort, name').all() });
+  res.json({ folders: db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent, created_by AS createdById FROM folders ORDER BY sort, name').all() });
 });
 
 r.delete('/folders/:id', admin, (req, res) => {

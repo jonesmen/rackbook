@@ -100,6 +100,22 @@ Sicherheit: Authorization Code Flow mit PKCE (S256), `state` und `nonce`, Signat
 
 Damit die Redirect-URI mit `https://` erzeugt wird, hinter dem Reverse Proxy `PUBLIC_URL` und `TRUST_PROXY=1` setzen. Nutzt Authentik ein Zertifikat einer eigenen CA, das CA-Zertifikat in den Container mounten und `NODE_EXTRA_CA_CERTS` setzen (siehe `.env`).
 
+## Teilen per Link (ohne Konto)
+
+Seiten (optional mit Unterseiten) und ganze Ordner (optional mit Unterordnern) lassen sich über das Teilen-Symbol als **nur lesender Link** freigeben – ohne Konto für den Empfänger.
+
+- **Wer darf teilen:** Administratoren alles, Bearbeiter nur selbst erstellte Seiten und Ordner. In geteilten Ordnern oder Seiten von Nicht-Admins erscheinen nur deren eigene Seiten.
+- **Übersicht & Widerruf:** Einstellungen → *Geteilte Links* (eigene Freigaben mit Aufrufzahl, Ablauf, Passwortschutz).
+- **Verwaltung → Freigaben:** Teilen an/aus, maximale und Standard-Gültigkeit, Passwortpflicht, Bearbeiter-Erlaubnis, alle aktiven Links. Administratoren können das Maximum beim Teilen überschreiben.
+- **Verwaltung → Benutzer:** „Privat machen“ widerruft alle Freigaben eines Benutzers auf einmal.
+
+Sicherheit:
+- Link-Format `https://<rackbook>/share#<Token>`: 256-Bit-Zufallstoken im URL-Fragment. Es wird nie an den Server als URL übertragen und taucht daher in keinem Server-, Proxy- oder Referrer-Log auf; gespeichert wird nur ein Hash.
+- Optionales Passwort (scrypt), höchstens 5 Fehlversuche pro 15 Minuten.
+- Bei jedem Aufruf wird neu geprüft: Teilen aktiviert, Link nicht abgelaufen oder widerrufen, Ersteller aktiv und weiterhin berechtigt.
+- Nur lesend; Verweise auf nicht geteilte Dokumente werden entschärft, Elternverweise außerhalb der Freigabe abgeschnitten.
+- `noindex`, `no-referrer`, strenge CSP und Rate-Limit pro IP.
+
 ## KI-Assistenten anbinden (MCP-Server)
 
 Rackbook enthält einen leichtgewichtigen [MCP](https://modelcontextprotocol.io)-Server (Streamable HTTP, zustandslos) unter `https://<rackbook>/mcp`. Damit kann eine KI (Claude Code, Claude Desktop, Cursor, VS Code, LibreChat …) Dokumentation lesen und pflegen.

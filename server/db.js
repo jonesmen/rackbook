@@ -142,6 +142,28 @@ const MIGRATIONS = [
   CREATE INDEX folders_parent ON folders(parent_id);
   CREATE INDEX documents_parent ON documents(parent_id);
   `,
+  // 5: Öffentliche Freigaben per Link
+  `
+  ALTER TABLE folders ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  CREATE TABLE shares (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('doc','folder')),
+    target_id TEXT NOT NULL,
+    include_children INTEGER NOT NULL DEFAULT 1,
+    password_hash TEXT,
+    label TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    revoked_at INTEGER,
+    revoked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    view_count INTEGER NOT NULL DEFAULT 0,
+    last_viewed_at INTEGER
+  );
+  CREATE INDEX shares_user ON shares(user_id);
+  CREATE INDEX shares_target ON shares(kind, target_id);
+  `,
 ];
 
 export function migrate() {

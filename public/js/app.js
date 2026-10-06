@@ -6,6 +6,7 @@ import {
 } from './util.js';
 import { AuthScreen, ForcePasswordChange } from './auth-views.js';
 import { SettingsPage, AdminPage } from './settings.js';
+import { ShareDialog } from './share-views.js';
 
 const CHEATS = [
   { syntax: '## Überschrift', label: 'Überschrift (## bis ####)' },
@@ -62,7 +63,7 @@ class App extends Component {
     docs: [], folders: [], meta: { staleDays: 90 }, pendingUsers: 0,
     page: 'dashboard', folder: null, docId: null, q: '', sq: '', tag: null, filterOpen: false, menuId: null,
     showAllFolders: false, draft: null, draftBase: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
-    userMenu: false, rev: null, saving: false,
+    userMenu: false, rev: null, saving: false, share: null,
     sbWidth: (() => { try { const w = Number(localStorage.getItem('rackbook.sbWidth')); return w >= 200 && w <= 480 ? w : 248; } catch { return 248; } })(),
     openNodes: (() => {
       try {
@@ -275,6 +276,7 @@ class App extends Component {
   onBeforeUnload = e => { if (this.isDirty()) { e.preventDefault(); e.returnValue = ''; } };
   onKey = e => {
     if (e.key === 'Escape') {
+      if (this.state.share) return this.setState({ share: null });
       if (this.state.rev) return this.setState({ rev: null });
       if (this.state.helpOpen) return this.setState({ helpOpen: false });
       if (this.state.menuId || this.state.filterOpen || this.state.userMenu) this.setState({ menuId: null, filterOpen: false, userMenu: false });
@@ -355,6 +357,22 @@ class App extends Component {
   async restoreRevision(d, rev) {
     if (!confirm(`Version ${rev.version} vom ${fmtDate(rev.created)} wiederherstellen? Der aktuelle Stand bleibt als Version erhalten.`)) return;
     try { const r = await api(`/docs/${encodeURIComponent(d.id)}/revisions/${rev.id}/restore`, { method: 'POST', body: {} }); this.upsertDoc(r.doc); this.setState({ rev: null }); this.flash('Version wiederhergestellt'); } catch (e) { this.fail(e); }
+  }
+
+  // ---------- Teilen ----------
+  canShareItem(obj) {
+    const cfg = this.state.meta.sharing || {};
+    if (!cfg.enabled || !obj) return false;
+    if (this.isAdmin()) return true;
+    return this.state.user.role === 'editor' && cfg.allowEditors && obj.createdById === this.state.user.id;
+  }
+  openShare(kind, obj) {
+    const hasChildren = kind === 'doc' ? this.docChildren(obj.id).length > 0 : this.subFolders(obj.id).length > 0 || this.state.docs.some(d => d.folder === obj.id);
+    this.setState({ share: { kind, id: obj.id, title: kind === 'doc' ? obj.title : this.folderPath(obj.id), hasChildren: kind === 'folder' ? this.subFolders(obj.id).length > 0 : hasChildren } });
+  }
+  openShareTarget(sh) {
+    if (sh.kind === 'doc') this.go('doc', { docId: sh.target });
+    else this.go('docs', { folder: sh.target, tag: null, q: '' });
   }
 
   // ---------- Ordner ----------
@@ -504,6 +522,7 @@ class App extends Component {
           onChange=${e => { if (e.target.files && e.target.files.length) this.readFiles(e.target.files); e.target.value = ''; }} />
         ${s.helpOpen && this.renderHelp()}
         ${s.rev && this.renderRevisions()}
+        ${s.share && html`<${ShareDialog} app=${this} item=${s.share} onClose=${() => this.setState({ share: null })} />`}
         ${s.toast && html`
           <div class=${'toast' + (s.toastErr ? ' error' : '')} role="status" aria-live="polite">
             ${s.toast}
@@ -753,7 +772,8 @@ class App extends Component {
             ${s.folder && html`<div class="crumbs"><button type="button" class="c" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Dokumente</button>
               ${chain.slice(0, -1).map(f => html`<span class="ms">chevron_right</span><button type="button" class="c" onClick=${() => this.go('docs', { folder: f.id, tag: null, q: '' })}>${f.name}</button>`)}
               <span class="ms">chevron_right</span><span class="cur">${title}</span></div>`}
-            <h1 class="h1">${title}</h1>
+            <div style=${{ display: 'flex', alignItems: 'center', gap: '10px' }}><h1 class="h1">${title}</h1>
+              ${s.folder && this.canShareItem(this.F(s.folder)) && html`<button type="button" class="sq-btn" title="Ordner teilen per Link" onClick=${() => this.openShare('folder', this.F(s.folder))}><span class="ms">share</span></button>`}</div>
           </div>
           ${this.headIcons()}
         </div>
@@ -874,6 +894,7 @@ class App extends Component {
           <div class="doc-actions">
             ${canEdit && html`<button type="button" class="sq-btn" title=${d.pinned ? 'Nicht mehr anpinnen' : 'Anpinnen'} aria-pressed=${d.pinned} onClick=${() => this.togglePin(d)}><span class=${'ms' + (d.pinned ? ' fill' : '')}>keep</span></button>`}
             <button type="button" class="sq-btn" title=${d.bookmarked ? 'Lesezeichen entfernen' : 'Lesezeichen setzen'} aria-pressed=${d.bookmarked} onClick=${() => this.toggleBookmark(d)}><span class=${'ms' + (d.bookmarked ? ' fill' : '')}>bookmark</span></button>
+            ${this.canShareItem(d) && html`<button type="button" class="sq-btn" title="Teilen per Link" onClick=${() => this.openShare('doc', d)}><span class="ms">share</span></button>`}
             <button type="button" class="sq-btn" title="Versionsverlauf" onClick=${() => this.openRevisions(d)}><span class="ms">history</span></button>
             <button type="button" class="sq-btn" title="Als .md herunterladen" onClick=${() => download(fileName(d), docMd(d))}><span class="ms">download</span></button>
             ${canEdit && html`<button type="button" class="sq-btn" title="Unterseite anlegen" onClick=${() => this.openEditor(null, d.folder, false, d.id)}><span class="ms">note_add</span></button>`}

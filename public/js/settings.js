@@ -1,6 +1,7 @@
 import { html, useState, useEffect } from '/vendor/preact-htm.js';
 import { api } from './api.js';
 import { McpPanel, McpAdmin } from './mcp-views.js';
+import { SharesPanel, SharesAdmin } from './share-views.js';
 import { Icon, Toggle, fcol, fmtDate, fmtDateTime, describeUA, ROLE_LABEL } from './util.js';
 
 const PanelHead = ({ title, desc }) => html`<div><h2 class="h2 s16">${title}</h2>${desc && html`<p class="desc">${desc}</p>`}</div>`;
@@ -265,6 +266,7 @@ export function SettingsPage({ app }) {
       <${ProfilePanel} app=${app} />
       <${AppearancePanel} app=${app} />
       <${SecurityPanel} app=${app} />
+      <${SharesPanel} app=${app} />
       <${McpPanel} app=${app} />
       ${app.canEdit() && html`<${FoldersPanel} app=${app} />`}
       ${app.canEdit() && html`<${TrashPanel} app=${app} />`}
@@ -305,6 +307,7 @@ function UserRow({ app, u, reload }) {
         <button type="button" class="btn btn-ghost sm" onClick=${resetPw}>Passwort</button>
         ${u.totpEnabled && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/reset-2fa', 'POST', '2FA zurückgesetzt', `2FA für „${u.username}“ zurücksetzen?`)}>2FA zurücksetzen</button>`}
         ${!me && u.sessions > 0 && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/sessions', 'DELETE', 'Sitzungen beendet')}>Abmelden</button>`}
+        ${u.shares > 0 && html`<button type="button" class="btn btn-ghost sm" title="Alle öffentlichen Links dieses Benutzers widerrufen" onClick=${() => act('/shares', 'DELETE', 'Alle Freigaben widerrufen – Inhalte sind wieder privat', `Alle ${u.shares} öffentlichen Freigaben von „${u.username}“ widerrufen?`)}><span class="ms s15">link_off</span> Privat machen (${u.shares})</button>`}
         ${!me && html`<button type="button" class="btn btn-danger sm" onClick=${() => act('', 'DELETE', 'Benutzer gelöscht', `Benutzer „${u.username}“ endgültig löschen?`)}>Löschen</button>`}
       </div></td>
     </tr>`;
@@ -467,6 +470,8 @@ const AUDIT_LABEL = {
   'user.sso_role_synced': 'Rolle aus SSO-Gruppen übernommen', 'admin.sso_updated': 'SSO-Einstellungen geändert',
   'mcp.token_created': 'KI-Token erstellt', 'mcp.token_revoked': 'KI-Token widerrufen', 'admin.mcp_token_revoked': 'KI-Token durch Admin widerrufen',
   'admin.mcp_updated': 'KI-Zugriff-Einstellungen geändert',
+  'share.created': 'Öffentlicher Link erstellt', 'share.revoked': 'Öffentlicher Link widerrufen', 'admin.shares_revoked': 'Alle Freigaben eines Benutzers widerrufen',
+  'admin.sharing_updated': 'Freigabe-Einstellungen geändert',
 };
 
 function AuditLog({ app }) {
@@ -514,7 +519,7 @@ export function AdminPage({ app }) {
     <div class="page g18" style=${{ maxWidth: '1100px' }} data-screen-label="Verwaltung">
       <div><h1 class="h1">Verwaltung</h1><p class="sub">Benutzer, Rollen und Systemeinstellungen.</p></div>
       <div class="tabs" role="tablist">
-        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['mcp', 'KI-Zugriff'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
+        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['mcp', 'KI-Zugriff'], ['shares', 'Freigaben'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>
       ${tab === 'users' && html`
         <div class="panel">
@@ -528,6 +533,7 @@ export function AdminPage({ app }) {
       ${tab === 'system' && html`<${SystemSettings} app=${app} />`}
       ${tab === 'sso' && html`<${SsoSettings} app=${app} />`}
       ${tab === 'mcp' && html`<${McpAdmin} app=${app} />`}
+      ${tab === 'shares' && html`<${SharesAdmin} app=${app} />`}
       ${tab === 'audit' && html`<${AuditLog} app=${app} />`}
     </div>`;
 }
