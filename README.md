@@ -9,8 +9,10 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 - Ordner mit **Unterordnern** (bis 5 Ebenen, frei anlegbar, mit Icon und Farbe), Tags, Tag-Filter, persönliche Lesezeichen
 - **Seitenbaum** in der Seitenleiste: Ordner, Unterordner, Dokumente und Unterseiten – jede Ebene aufklappbar, Seitenleiste per Ziehen verbreiterbar
 - **Unterseiten**: Dokumente lassen sich unter einem Hauptdokument anordnen (z. B. ein Projekt mit Unterseiten für Konfiguration, Backup, Runbooks); Brotkrumen-Pfad, Unterseiten-Liste, Verschieben und Löschen samt Unterseiten
-- Markdown-Editor mit Toolbar, Live-Vorschau, Zeilenumbruch, Schriftgröße, `Strg/⌘ + S`
-- Dokumentansicht mit Inhaltsverzeichnis, kopierbaren Code-Blöcken und abhakbaren Checklisten
+- **Block-Editor** (wie Notion): Umschalter **Bearbeiten | Lesen**, automatisches Speichern, `/` öffnet das Einfügemenü, Blöcke per Griff verschieben, Formatierungsleiste bei Markierung, Markdown-Kürzel (`#`, `-`, `1.`, `[]`, `>`), Rückgängig/Wiederholen, optional Markdown-Quelltext
+- Blöcke im `/`-Menü: Text, To-do-Liste, Überschrift 1–3, Aufzählung, nummerierte Liste, Zitat, Hinweisblock, Umschaltblock, Code, Tabelle, Trennlinie, Seitenumbruch, Fußnote, Bild, Video, Audio, PDF einbetten, Dateianhang, Base (Inline-Datenbank), Kanban, Mathe (inline & Block, LaTeX), Mermaid-Diagramm, Draw.io, Excalidraw, Unterseiten, synchronisierter Block, Datum, Uhrzeit, Status, Emoji, 2–5 Spalten, iframe, Airtable, Loom, Figma, Typeform, Miro, YouTube, Vimeo, Framer, Google Drive, Google Sheets
+- Gespeichert wird weiterhin **Markdown** (mit wenigen Erweiterungen) – Suche, Export und KI-Zugriff funktionieren unverändert
+- Dokumentansicht mit Inhaltsverzeichnis, kopierbaren Code-Blöcken, abhakbaren Checklisten, sortierbaren Datenbanken und Druck-/PDF-Ansicht (Seitenumbrüche)
 - Globale Volltextsuche mit Trefferhervorhebung (Titel, Inhalt, Tags, IPs, Befehle)
 - Benachrichtigungen für Dokumente, die länger nicht geprüft wurden („Als geprüft markieren“)
 - Versionsverlauf pro Dokument mit Wiederherstellung, Papierkorb mit „Rückgängig“
@@ -32,6 +34,8 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 - **Brute-Force-Schutz**: Rate-Limiting pro IP, Kontosperre nach Fehlversuchen, keine Benutzer-Enumeration (konstante Antwortzeit)
 - Strenge **Content-Security-Policy** (keine Inline-Skripte/-Styles, keine externen CDNs – Schriften & Bibliotheken werden lokal ausgeliefert), `X-Frame-Options`, `nosniff`, `Referrer-Policy`, HSTS bei HTTPS
 - XSS-sicherer Markdown-Renderer (alles escaped, `javascript:`-Links blockiert)
+- Hochgeladene Dateien: Typ wird am Inhalt erkannt (nicht am Namen), unbekannte Typen nur als Download, SVGs/Bilder mit eigener Sandbox-CSP, Zugriff nur angemeldet bzw. über zeitlich begrenzte signierte Links aus Freigaben
+- Externe Einbettungen in abgesicherten iframes (Sandbox, eigener Ursprung) – vom Admin komplett abschaltbar; Mermaid/Excalidraw laufen isoliert und lokal
 - Container läuft **ohne Root**, mit schreibgeschütztem Dateisystem, ohne Linux-Capabilities und mit `no-new-privileges`
 - Schutz vor Aussperren: der letzte aktive Administrator kann nicht entfernt oder herabgestuft werden
 
@@ -99,6 +103,19 @@ Weitere Optionen: Benutzer automatisch anlegen, Rollen bei jeder Anmeldung aus G
 Sicherheit: Authorization Code Flow mit PKCE (S256), `state` und `nonce`, Signaturprüfung des ID-Tokens über die JWKS des Providers (`openid-client`). Das Client-Secret wird verschlüsselt gespeichert und nie wieder an den Browser ausgeliefert. Zwei-Faktor-Schutz für SSO-Benutzer übernimmt Authentik.
 
 Damit die Redirect-URI mit `https://` erzeugt wird, hinter dem Reverse Proxy `PUBLIC_URL` und `TRUST_PROXY=1` setzen. Nutzt Authentik ein Zertifikat einer eigenen CA, das CA-Zertifikat in den Container mounten und `NODE_EXTRA_CA_CERTS` setzen (siehe `.env`).
+
+## Editor
+
+Jedes Dokument hat oben rechts den Umschalter **Bearbeiten | Lesen**. Im Bearbeiten-Modus wird automatisch gespeichert (pro Bearbeitungssitzung entsteht eine Version im Versionsverlauf). In den persönlichen Einstellungen lässt sich festlegen, ob Dokumente standardmäßig zum Lesen oder Bearbeiten geöffnet werden.
+
+- **`/`** am Zeilenanfang (oder nach einem Leerzeichen) öffnet das Menü mit allen Blöcken; Weitertippen filtert („tab“, „yt“, „spalten“ …), `↑`/`↓` + `Enter` wählt aus.
+- Links neben jedem Block: **`+`** (Block darunter einfügen) und **`⋮⋮`** (ziehen zum Verschieben, klicken für Umwandeln, Duplizieren, Löschen).
+- Dateien per Upload, Drag & Drop oder Einfügen aus der Zwischenablage (Bilder). Größenlimit und Uploads unter **Verwaltung → System → Editor & Medien**.
+- **Excalidraw** und **Mermaid** sind im Image enthalten und laufen komplett lokal. **Draw.io** nutzt standardmäßig `https://embed.diagrams.net` (die Diagrammdaten bleiben im Browser); alternativ einen eigenen Draw.io-Container (z. B. `jgraph/drawio`) eintragen.
+- **Synchronisierte Blöcke** werden einmal angelegt und können in beliebig vielen Dokumenten eingefügt werden – Änderungen erscheinen überall.
+- **Externe Inhalte** (YouTube, Figma, Miro, Google Drive, iframes, Bilder per https) lassen sich unter **Editor & Medien** abschalten; dann werden nur Links angezeigt und die CSP erlaubt keine fremden Quellen.
+
+Format der Erweiterungen (falls Dokumente per Hand oder per KI geschrieben werden): `> [!NOTE]` Hinweisblock, `:::toggle Titel … :::`, `:::columns` / `:::column … :::`, ` ```mermaid `, ` ```math `, `$…$`, `{{date:2026-01-31}}`, `{{status:Offen|red}}`, `[^1]` Fußnoten, `::pagebreak`, `::subpages`, `::embed {"url":"…"}`. Hinweis: Eine einfache Zeile mit `>` ist jetzt ein **Zitat**; für den farbigen Hinweis `> [!NOTE]` verwenden.
 
 ## Teilen per Link (ohne Konto)
 
@@ -201,7 +218,7 @@ docker run --rm -v rackbook-data:/data -v "$PWD":/backup alpine \
 docker compose up -d
 ```
 
-Zusätzlich können Administratoren unter **Einstellungen → Daten** ein JSON-Backup aller Dokumente herunterladen und wieder einspielen.
+Zusätzlich können Administratoren unter **Einstellungen → Daten** ein JSON-Backup aller Dokumente bzw. ein **Komplett-Backup inkl. hochgeladener Dateien und synchronisierter Blöcke** herunterladen und wieder einspielen. Hochgeladene Dateien liegen im Volume unter `files/`.
 
 > Wird ein Bind-Mount statt des benannten Volumes verwendet, muss das Verzeichnis dem Benutzer mit UID 1000 gehören (`chown 1000:1000 ./data`).
 

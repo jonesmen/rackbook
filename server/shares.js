@@ -6,6 +6,8 @@
 // - Optionales Passwort (scrypt), Fehlversuche pro Freigabe und IP begrenzt.
 // - Bei JEDEM Aufruf wird neu geprüft: Freigaben aktiviert, nicht widerrufen/abgelaufen, Ersteller aktiv
 //   und (noch) berechtigt. Nicht-Admins geben nur eigene Inhalte frei – auch innerhalb eines Ordners.
+import { getSynced, syncedRefs } from './synced.js';
+import { fileRefs, signedFileUrl, getEditorSettings } from './files.js';
 import { db, getSetting, setSetting } from './db.js';
 import { HttpError, randomToken, sha256, hashPassword, verifyPassword, dummyVerify, RateLimiter } from './security.js';
 import { folderDescendants, docDescendants, folderAncestors, docAncestors } from './tree.js';
@@ -155,7 +157,14 @@ export async function resolvePublic(token, password, ip) {
   docs = docs.slice(0, 1000);
   const ids = new Set(docs.map(d => d.id));
   db.prepare('UPDATE shares SET view_count = view_count + 1, last_viewed_at = ? WHERE id = ?').run(Date.now(), sh.id);
+  // Eingebundene synchronisierte Blöcke und Dateien: nur was in den freigegebenen Dokumenten vorkommt.
+  const synced = getSynced(new Set(docs.flatMap(d => [...syncedRefs(d.content)])));
+  const fileIds = new Set([...docs.map(d => d.content), ...Object.values(synced)].flatMap(c => [...fileRefs(c)]));
+  const files = {};
+  for (const id of fileIds) if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) files[id] = signedFileUrl(id);
+  const ed = getEditorSettings();
   return {
+    synced, files, embeds: ed.embeds,
     kind: sh.kind, root: target.id, title: target.title, expiresAt: sh.expires_at,
     folders: folders.map(f => ({ id: f.id, name: f.name, icon: f.icon, hue: f.hue, parent: f.id === target.id ? null : f.parent_id })),
     // Elternverweise außerhalb der Freigabe werden gekappt, damit nichts Fremdes durchscheint.

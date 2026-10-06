@@ -6,7 +6,7 @@ export const ACCENTS = {
   blau: { soft: 'oklch(0.9 0.06 250)', strong: 'oklch(0.56 0.16 250)' },
   violett: { soft: 'oklch(0.9 0.07 295)', strong: 'oklch(0.55 0.18 295)' },
 };
-export const DEFAULT_SETTINGS = { livePreview: true, wrap: true, fontSize: 14, accent: 'mint', startPage: 'dashboard', sidebarCollapsed: false, bmOpen: true };
+export const DEFAULT_SETTINGS = { openMode: 'read', wrap: true, fontSize: 14, accent: 'mint', startPage: 'dashboard', sidebarCollapsed: false, bmOpen: true };
 export const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', viewer: 'Leser' };
 export const STATUS_LABEL = { active: 'Aktiv', pending: 'Wartet auf Freischaltung', disabled: 'Deaktiviert' };
 

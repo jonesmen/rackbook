@@ -51,10 +51,13 @@ function AppearancePanel({ app }) {
     </div>
     <div class="panel tight">
       <h2 class="h2 s16" style=${{ marginBottom: '8px' }}>Editor</h2>
-      <${SetToggle} title="Live-Vorschau" desc="Gerendertes Markdown neben dem Editor anzeigen" on=${st.livePreview} onClick=${() => app.setSettings({ livePreview: !st.livePreview })} />
-      <${SetToggle} title="Zeilenumbruch" desc="Lange Zeilen im Editor umbrechen" on=${st.wrap} onClick=${() => app.setSettings({ wrap: !st.wrap })} />
       <div class="set-row static">
-        <div><div class="t">Schriftgröße</div><div class="s">Monospace-Schrift im Editor</div></div>
+        <div><div class="t">Dokumente öffnen in</div><div class="s">Ansicht beim Öffnen eines Dokuments (Bearbeiten nur mit Schreibrechten)</div></div>
+        <div class="seg">${[['read', 'Lesen'], ['edit', 'Bearbeiten']].map(([v, l]) => html`<button type="button" class=${(st.openMode || 'read') === v ? 'on' : ''} onClick=${() => app.setSettings({ openMode: v })}>${l}</button>`)}</div>
+      </div>
+      <${SetToggle} title="Zeilenumbruch im Markdown-Quelltext" desc="Lange Zeilen in der Markdown-Ansicht umbrechen" on=${st.wrap} onClick=${() => app.setSettings({ wrap: !st.wrap })} />
+      <div class="set-row static">
+        <div><div class="t">Schriftgröße</div><div class="s">Monospace-Schrift in der Markdown-Ansicht</div></div>
         <div class="seg">${[13, 14, 16].map(n => html`<button type="button" class=${st.fontSize === n ? 'on' : ''} onClick=${() => app.setSettings({ fontSize: n })}>${n} px</button>`)}</div>
       </div>
     </div>`;
@@ -250,6 +253,7 @@ function DataPanel({ app }) {
       <div class="btn-row">
         <button type="button" class="btn btn-primary md" onClick=${() => app.exportMd()}><${Icon} name="download" />Alles als Markdown</button>
         <button type="button" class="btn btn-ghost md" onClick=${() => app.exportJson()}><${Icon} name="data_object" />JSON-Backup</button>
+        ${app.isAdmin() && html`<a class="btn btn-ghost md" href="/api/admin/backup?files" download><${Icon} name="inventory_2" />Komplett-Backup inkl. Dateien</a>`}
         ${app.canEdit() && html`<button type="button" class="btn btn-ghost md" onClick=${() => app.triggerImport()}><${Icon} name="upload_file" />.md importieren</button>`}
         ${app.isAdmin() && html`
           <button type="button" class="btn btn-ghost md" onClick=${() => restoreRef.current && restoreRef.current.click()}><${Icon} name="settings_backup_restore" />Backup einspielen</button>
@@ -360,6 +364,38 @@ function SystemSettings({ app }) {
     </div>`;
 }
 
+// ---------------- Editor & Medien ----------------
+const fmtBytes = n => (n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1).replace('.', ',') + ' MB');
+function EditorSettings({ app }) {
+  const [s, setS] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [drawio, setDrawio] = useState('');
+  useEffect(() => { api('/admin/editor').then(r => { setS(r.settings); setStats(r.stats); setDrawio(r.settings.drawioUrl); }).catch(e => app.flash(e.message, null, true)); }, []);
+  const save = async patch => {
+    try { const r = await api('/admin/editor', { method: 'PUT', body: patch }); setS(r.settings); setStats(r.stats); setDrawio(r.settings.drawioUrl); app.flash('Einstellungen gespeichert'); app.loadMeta(); }
+    catch (e) { app.flash(e.message, null, true); }
+  };
+  if (!s) return null;
+  return html`
+    <div class="panel tight">
+      <h2 class="h2 s16" style=${{ marginBottom: '8px' }}>Editor & Medien</h2>
+      <${SetToggle} title="Datei-Uploads erlauben" desc="Bilder, Videos, Audio, PDFs und Anhänge im Editor hochladen" on=${s.uploads} onClick=${() => save({ uploads: !s.uploads })} />
+      <div class="set-row static">
+        <div><div class="t">Maximale Dateigröße</div><div class="s">Pro Datei, in MB${stats ? ` · aktuell ${stats.count} Datei(en), ${fmtBytes(stats.bytes)}` : ''}</div></div>
+        <input class="input" type="number" min="1" max="2048" style=${{ width: '90px' }} value=${s.uploadMaxMb} onChange=${e => save({ uploadMaxMb: Number(e.target.value) })} />
+      </div>
+      <${SetToggle} title="Externe Inhalte erlauben" desc="YouTube, Vimeo, Loom, Figma, Miro, Google Drive, iframes und Bilder von https-Adressen einbetten. Aus: nur Links werden angezeigt." on=${s.embeds} onClick=${() => save({ embeds: !s.embeds })} />
+      <div class="set-row static">
+        <div><div class="t">Draw.io-Editor</div><div class="s">Adresse des Draw.io-Editors (öffentlich: https://embed.diagrams.net oder selbst gehostet, z. B. jgraph/drawio). Leer = Draw.io deaktiviert.</div></div>
+        <div style=${{ display: 'flex', gap: '6px' }}>
+          <input class="input" style=${{ width: '260px' }} value=${drawio} placeholder="https://embed.diagrams.net" onInput=${e => setDrawio(e.target.value)} />
+          <button type="button" class="btn btn-ghost sm" disabled=${drawio === s.drawioUrl} onClick=${() => save({ drawioUrl: drawio })}>Speichern</button>
+        </div>
+      </div>
+      <div class="hint" style=${{ marginTop: '8px' }}>Excalidraw, Mermaid und Formeln laufen vollständig lokal. Hochgeladene Dateien liegen im Daten-Volume unter <span class="mono">files/</span>; nicht mehr verwendete Dateien werden nach einem Tag automatisch entfernt.</div>
+    </div>`;
+}
+
 // ---------------- Single Sign-On (OIDC) ----------------
 const csv = a => (Array.isArray(a) ? a.join(', ') : a || '');
 
@@ -462,7 +498,7 @@ const AUDIT_LABEL = {
   'user.2fa_disabled': '2FA deaktiviert', 'session.revoked': 'Sitzung beendet', 'session.revoked_all': 'Alle anderen Sitzungen beendet',
   'admin.user_created': 'Benutzer angelegt', 'admin.user_updated': 'Benutzer geändert', 'admin.password_reset': 'Passwort zurückgesetzt',
   'admin.2fa_reset': '2FA zurückgesetzt', 'admin.sessions_revoked': 'Sitzungen eines Benutzers beendet', 'admin.user_deleted': 'Benutzer gelöscht',
-  'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.backup_exported': 'Backup exportiert', 'admin.backup_restored': 'Backup eingespielt',
+  'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.editor_updated': 'Editor-Einstellungen geändert', 'file.uploaded': 'Datei hochgeladen', 'synced.created': 'Synchronisierten Block erstellt', 'admin.backup_exported': 'Backup exportiert', 'admin.backup_restored': 'Backup eingespielt',
   'admin.sample_data': 'Beispieldaten geladen', 'doc.created': 'Dokument erstellt', 'doc.updated': 'Dokument geändert', 'doc.deleted': 'Dokument gelöscht',
   'doc.restored': 'Dokument wiederhergestellt', 'doc.purged': 'Dokument endgültig gelöscht', 'doc.reviewed': 'Als geprüft markiert',
   'doc.imported': 'Dokumente importiert', 'doc.revision_restored': 'Version wiederhergestellt', 'folder.created': 'Ordner angelegt',
@@ -531,7 +567,7 @@ export function AdminPage({ app }) {
           </table></div>
         </div>
         <${CreateUser} app=${app} reload=${reload} />`}
-      ${tab === 'system' && html`<${SystemSettings} app=${app} />`}
+      ${tab === 'system' && html`<${SystemSettings} app=${app} /><${EditorSettings} app=${app} />`}
       ${tab === 'sso' && html`<${SsoSettings} app=${app} />`}
       ${tab === 'mcp' && html`<${McpAdmin} app=${app} />`}
       ${tab === 'shares' && html`<${SharesAdmin} app=${app} />`}

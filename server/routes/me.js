@@ -14,6 +14,7 @@ const r = Router();
 // Erlaubte Nutzereinstellungen inkl. Validierung.
 const SETTINGS = {
   livePreview: v => typeof v === 'boolean',
+  openMode: v => ['read', 'edit'].includes(v),
   wrap: v => typeof v === 'boolean',
   fontSize: v => [13, 14, 16].includes(v),
   accent: v => ['mint', 'blau', 'violett'].includes(v),

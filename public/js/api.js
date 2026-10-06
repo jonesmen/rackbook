@@ -1,6 +1,7 @@
 // Fetch-Wrapper: JSON, Cookies (same-origin) und CSRF-Header.
 let csrf = null;
 export const setCsrf = t => { csrf = t; };
+export const getCsrf = () => csrf;
 
 export class ApiError extends Error {
   constructor(status, data) {

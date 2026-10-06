@@ -1,0 +1,9 @@
+html, body, #root { margin: 0; height: 100%; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+.rb-wrap { display: flex; flex-direction: column; height: 100%; }
+.rb-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; }
+.rb-state { flex: 1; font-size: 12.5px; color: #6b7280; }
+.rb-bar button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; }
+.rb-bar button.primary { background: #0f172a; color: #fff; border-color: #0f172a; }
+.rb-bar button:disabled { opacity: .5; cursor: default; }
+.rb-canvas { flex: 1; min-height: 0; }
+.rb-loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #6b7280; font-size: 14px; }

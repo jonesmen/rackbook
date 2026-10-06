@@ -3,7 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, migrate, getSetting } from './db.js';
 import { config } from './config.js';
-import { HttpError, securityHeaders } from './security.js';
+import { HttpError, securityHeaders, setCspExtra } from './security.js';
 import { sessionMiddleware, csrfProtection, requireAuth, requireRole } from './auth.js';
 import authRoutes from './routes/auth.js';
 import meRoutes from './routes/me.js';
@@ -12,6 +12,10 @@ import adminRoutes from './routes/admin.js';
 import { DEFAULT_FOLDERS, sampleDocs } from './seed.js';
 import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint } from './mcp.js';
 import { shareRoutes, publicRoutes, getShareSettings } from './routes/shares.js';
+import { fileApi, serveFile, getEditorSettings, cleanupFiles, editorCspExtra } from './files.js';
+import { syncedApi, cleanupSynced } from './synced.js';
+
+setCspExtra(editorCspExtra);
 
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -32,6 +36,9 @@ export function housekeeping() {
   db.prepare('DELETE FROM audit_log WHERE ts < ?').run(now - config.auditRetentionDays * 86400000);
   // Abgelaufene/widerrufene Freigaben nach 30 Tagen endgültig entfernen
   db.prepare('DELETE FROM shares WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR (expires_at IS NOT NULL AND expires_at < ?)').run(now - 30 * 86400000, now - 30 * 86400000);
+  // Nicht mehr verwendete Dateien und synchronisierte Blöcke
+  cleanupFiles();
+  cleanupSynced();
 }
 
 export function createApp() {
@@ -50,8 +57,11 @@ export function createApp() {
 
   const api = express.Router();
   api.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
-  api.use(express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 25) / 1048576)) + 'mb' }));
   api.use(sessionMiddleware);
+  // Vollständige Backups (inkl. Dateien) können groß sein – das höhere Limit gilt nur für angemeldete Admins.
+  const jsonStd = express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 25) / 1048576)) + 'mb' });
+  const jsonBig = express.json({ limit: '2gb' });
+  api.use((req, res, next) => (req.path === '/admin/restore' && req.user?.role === 'admin' ? jsonBig : jsonStd)(req, res, next));
   api.use(csrfProtection);
   api.use('/auth', authRoutes);
   api.use('/public', publicRoutes);
@@ -65,21 +75,39 @@ export function createApp() {
       const sh = getShareSettings();
       return { enabled: sh.enabled, maxDays: sh.maxDays, defaultDays: sh.defaultDays, requirePassword: sh.requirePassword, allowEditors: sh.allowEditors };
     })(),
+    editor: (() => {
+      const e = getEditorSettings();
+      return { uploads: e.uploads, uploadMaxMb: e.uploadMaxMb, embeds: e.embeds, drawioUrl: e.drawioUrl };
+    })(),
     mcp: (() => {
       const m = getMcpSettings();
       return { enabled: m.enabled, endpoint: mcpEndpoint(req), grantable: m.enabled ? grantableScopes(req.user.role, m) : [], maxTokenDays: m.maxTokenDays };
     })(),
   }));
   api.use('/shares', shareRoutes);
+  api.use('/files', fileApi);
+  api.use('/synced', syncedApi);
   api.use('/admin', requireRole('admin'), adminRoutes);
   api.use('/', docRoutes);
   api.use(() => { throw new HttpError(404, 'Nicht gefunden.'); });
   app.use('/api', api);
 
+  // Hochgeladene Dateien (Sitzung oder signierter Link aus einer Freigabe)
+  app.get('/files/:id', sessionMiddleware, serveFile);
+
   app.use(express.static(publicDir, {
     index: false,
     setHeaders(res, path) {
-      res.setHeader('Cache-Control', /\/(fonts|vendor)\//.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      res.setHeader('Cache-Control', /\/(fonts|vendor)\/(?!excalidraw\/app|katex|mermaid)/.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      // Der Excalidraw-Editor läuft eingebettet (iframe) und braucht WebAssembly/Worker für den SVG-Export.
+      if (/[\\/]mermaid-frame\.html$/.test(path)) {
+        res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'");
+        res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+      }
+      if (/[\\/]excalidraw\.html$/.test(path)) {
+        res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'");
+        res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+      }
     },
   }));
   // Öffentliche Freigabeseite (Token im URL-Fragment, nie in der Server-URL)
