@@ -11,6 +11,7 @@ import docRoutes, { insertDoc } from './routes/docs.js';
 import adminRoutes from './routes/admin.js';
 import { DEFAULT_FOLDERS, sampleDocs } from './seed.js';
 import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint } from './mcp.js';
+import { shareRoutes, publicRoutes, getShareSettings } from './routes/shares.js';
 
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -29,6 +30,8 @@ export function housekeeping() {
   db.prepare('DELETE FROM sessions WHERE expires_at < ? OR last_seen_at < ?').run(now, now - config.sessionIdleMinutes * 60000);
   db.prepare('DELETE FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?').run(now - config.trashRetentionDays * 86400000);
   db.prepare('DELETE FROM audit_log WHERE ts < ?').run(now - config.auditRetentionDays * 86400000);
+  // Abgelaufene/widerrufene Freigaben nach 30 Tagen endgültig entfernen
+  db.prepare('DELETE FROM shares WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR (expires_at IS NOT NULL AND expires_at < ?)').run(now - 30 * 86400000, now - 30 * 86400000);
 }
 
 export function createApp() {
@@ -51,17 +54,23 @@ export function createApp() {
   api.use(sessionMiddleware);
   api.use(csrfProtection);
   api.use('/auth', authRoutes);
+  api.use('/public', publicRoutes);
   api.use(requireAuth);
   api.use('/me', meRoutes);
   api.get('/meta', (req, res) => res.json({
     staleDays: getSetting('stale_days', config.staleDaysDefault),
     trashRetentionDays: config.trashRetentionDays,
     maxDocBytes: config.maxDocBytes,
+    sharing: (() => {
+      const sh = getShareSettings();
+      return { enabled: sh.enabled, maxDays: sh.maxDays, defaultDays: sh.defaultDays, requirePassword: sh.requirePassword, allowEditors: sh.allowEditors };
+    })(),
     mcp: (() => {
       const m = getMcpSettings();
       return { enabled: m.enabled, endpoint: mcpEndpoint(req), grantable: m.enabled ? grantableScopes(req.user.role, m) : [], maxTokenDays: m.maxTokenDays };
     })(),
   }));
+  api.use('/shares', shareRoutes);
   api.use('/admin', requireRole('admin'), adminRoutes);
   api.use('/', docRoutes);
   api.use(() => { throw new HttpError(404, 'Nicht gefunden.'); });
@@ -73,6 +82,12 @@ export function createApp() {
       res.setHeader('Cache-Control', /\/(fonts|vendor)\//.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache');
     },
   }));
+  // Öffentliche Freigabeseite (Token im URL-Fragment, nie in der Server-URL)
+  app.get('/share', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    res.sendFile(join(publicDir, 'share.html'));
+  });
   // SPA-Fallback: alle übrigen GET-Anfragen liefern die App-Shell aus.
   app.get(/^(?!\/api\/).*/, (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');

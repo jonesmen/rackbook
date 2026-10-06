@@ -9,6 +9,7 @@ import { DEFAULT_FOLDERS, sampleDocs } from '../seed.js';
 import { checkFolderParent, checkDocParent } from '../tree.js';
 import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
 import { getMcpSettings, saveMcpSettings, listTokens, revokeToken, mcpEndpoint } from '../mcp.js';
+import { getShareSettings, saveShareSettings, listShares, revokeShare, revokeAllOfUser, activeShareCounts } from '../shares.js';
 
 const r = Router();
 r.use(requireRole('admin'));
@@ -20,7 +21,8 @@ const activeAdmins = () => db.prepare("SELECT COUNT(*) AS n FROM users WHERE rol
 
 function adminView(u) {
   const sessions = db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND expires_at > ?').get(u.id, Date.now()).n;
-  return { ...publicUser(u), settings: undefined, locked: u.locked_until > Date.now(), sessions };
+  const shares = db.prepare('SELECT COUNT(*) AS n FROM shares WHERE user_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)').get(u.id, Date.now()).n;
+  return { ...publicUser(u), settings: undefined, locked: u.locked_until > Date.now(), sessions, shares };
 }
 
 // ---------- Benutzerverwaltung ----------
@@ -146,6 +148,27 @@ r.delete('/mcp-tokens/:id', (req, res) => {
   revokeToken(Number(req.params.id));
   audit(req, 'admin.mcp_token_revoked', String(req.params.id));
   res.json({ tokens: listTokens() });
+});
+
+// ---------- Freigaben ----------
+r.get('/shares', (req, res) => res.json({ settings: getShareSettings(), shares: listShares({}), counts: activeShareCounts() }));
+r.put('/shares/settings', (req, res) => {
+  const settings = saveShareSettings(req.body);
+  audit(req, 'admin.sharing_updated', null, settings);
+  res.json({ settings });
+});
+r.delete('/shares/:id', (req, res) => {
+  const sh = revokeShare(req.params.id, req.user, { onlyOwn: false });
+  audit(req, 'share.revoked', `${sh.kind}:${sh.target_id}`, { id: sh.id, byAdmin: true });
+  res.json({ shares: listShares({}) });
+});
+// Alle öffentlichen Freigaben eines Benutzers wieder privat machen
+r.delete('/users/:id/shares', (req, res) => {
+  const u = load(req.params.id);
+  if (!u) throw new HttpError(404, 'Benutzer nicht gefunden.');
+  const n = revokeAllOfUser(u.id, req.user);
+  audit(req, 'admin.shares_revoked', u.username, { count: n });
+  res.json({ revoked: n, user: adminView(load(u.id)) });
 });
 
 // ---------- Audit-Log ----------

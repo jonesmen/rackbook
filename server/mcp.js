@@ -477,7 +477,7 @@ const TOOLS = [
       let id = base, i = 2;
       while (folderExists(id)) id = `${base}-${i++}`;
       const sort = (db.prepare('SELECT MAX(sort) AS m FROM folders').get().m ?? 0) + 1;
-      db.prepare('INSERT INTO folders (id, name, icon, hue, sort, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, name, icon, hue, sort, parent, Date.now());
+      db.prepare('INSERT INTO folders (id, name, icon, hue, sort, parent_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, name, icon, hue, sort, parent, ctx.user.id, Date.now());
       logWrite(ctx, req, 'folder.created', id, { name, parent });
       return { text: `Ordner „${folderPath(id)}“ angelegt (ID \`${id}\`).` };
     },

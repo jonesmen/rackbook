@@ -422,3 +422,12 @@ select.input { cursor: pointer; }
 .sb-resize:hover, body.resizing .sb-resize { background: var(--acc-soft); }
 body.resizing { cursor: col-resize; user-select: none; }
 body.resizing .sidebar { transition: none; }
+
+/* ---------- Freigaben ---------- */
+.share-banner { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; align-self: flex-start; }
+.md-dead { color: var(--muted); text-decoration: underline dotted; cursor: not-allowed; }
+.share-link { display: flex; gap: 6px; }
+.share-link .input { font-family: var(--mono); font-size: 12px; }
+.pill.public { background: oklch(0.95 0.05 250); color: oklch(0.45 0.13 250); }
+.link-plain { background: none; border: 0; padding: 0; font: inherit; color: var(--ink); cursor: pointer; text-align: left; }
+.link-plain:hover { text-decoration: underline; }
