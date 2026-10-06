@@ -6,6 +6,7 @@ import { audit, publicUser, requireRole, revokeUserSessions } from '../auth.js';
 import { USERNAME_RE, cleanName } from './auth.js';
 import { folderExists, insertDoc, normContent, normTags, normTitle } from './docs.js';
 import { DEFAULT_FOLDERS, sampleDocs } from '../seed.js';
+import { checkFolderParent, checkDocParent } from '../tree.js';
 import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
 import { getMcpSettings, saveMcpSettings, listTokens, revokeToken, mcpEndpoint } from '../mcp.js';
 
@@ -157,14 +158,14 @@ r.get('/audit', (req, res) => {
 
 // ---------- Backup / Wiederherstellung ----------
 r.get('/backup', (req, res) => {
-  const folders = db.prepare('SELECT id, name, icon, hue, sort FROM folders ORDER BY sort').all();
+  const folders = db.prepare('SELECT id, name, icon, hue, sort, parent_id AS parent FROM folders ORDER BY sort').all();
   const documents = db.prepare('SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY updated_at DESC').all().map(d => ({
-    id: d.id, title: d.title, folder: d.folder_id, tags: JSON.parse(d.tags), content: d.content, pinned: !!d.pinned,
+    id: d.id, title: d.title, folder: d.folder_id, parent: d.parent_id ?? null, tags: JSON.parse(d.tags), content: d.content, pinned: !!d.pinned,
     created: d.created_at, updated: d.updated_at, reviewed: d.reviewed_at,
   }));
   audit(req, 'admin.backup_exported', null, { documents: documents.length });
   res.setHeader('Content-Disposition', `attachment; filename="rackbook-backup-${new Date().toISOString().slice(0, 10)}.json"`);
-  res.json({ app: 'rackbook', format: 1, exportedAt: Date.now(), folders, documents });
+  res.json({ app: 'rackbook', format: 2, exportedAt: Date.now(), folders, documents });
 });
 
 r.post('/restore', (req, res) => {
@@ -172,8 +173,10 @@ r.post('/restore', (req, res) => {
   if (!Array.isArray(b.documents)) throw new HttpError(400, 'Ungültige Backup-Datei.');
   const result = tx(() => {
     let folders = 0, created = 0, updated = 0;
-    for (const f of Array.isArray(b.folders) ? b.folders : []) {
-      const id = String(f.id || '').toLowerCase().replace(/[^a-z0-9äöüß-]/g, '-').slice(0, 40);
+    const fid = v => String(v || '').toLowerCase().replace(/[^a-z0-9äöüß-]/g, '-').slice(0, 40);
+    const inFolders = Array.isArray(b.folders) ? b.folders : [];
+    for (const f of inFolders) {
+      const id = fid(f.id);
       if (!id) continue;
       const name = cleanName(f.name) || id, icon = /^[a-z0-9_]{1,40}$/.test(f.icon) ? f.icon : 'folder';
       const hue = Math.min(360, Math.max(0, Math.round(Number(f.hue) || 250)));
@@ -181,6 +184,11 @@ r.post('/restore', (req, res) => {
                   ON CONFLICT(id) DO UPDATE SET name = excluded.name, icon = excluded.icon, hue = excluded.hue`)
         .run(id, name, icon, hue, Number(f.sort) || 0, Date.now());
       folders++;
+    }
+    // Hierarchie erst nach dem Anlegen aller Ordner setzen (ungültige Verweise werden ignoriert).
+    for (const f of inFolders) {
+      if (!f.parent) continue;
+      try { db.prepare('UPDATE folders SET parent_id = ? WHERE id = ?').run(checkFolderParent(fid(f.id), fid(f.parent)), fid(f.id)); } catch { /* ignorieren */ }
     }
     const fallback = db.prepare('SELECT id FROM folders ORDER BY sort LIMIT 1').get()?.id;
     for (const d of b.documents) {
@@ -197,6 +205,14 @@ r.post('/restore', (req, res) => {
         insertDoc({ id, title: d.title, folder, tags: d.tags, content: d.content, pinned: d.pinned, created: ts(d.created), updated: ts(d.updated) }, req.user.id);
         created++;
       }
+    }
+    for (let pass = 0; pass < 2; pass++) for (const d of b.documents) { // 2 Durchläufe: Ordner von Unterseiten folgen der Elternseite
+      const id = String(d.id || '');
+      if (!d.parent || !/^[A-Za-z0-9_-]{1,40}$/.test(id)) continue;
+      try {
+        const p = checkDocParent(id, String(d.parent));
+        db.prepare('UPDATE documents SET parent_id = ?, folder_id = ? WHERE id = ?').run(p.parent, p.folder, id);
+      } catch { /* ignorieren */ }
     }
     return { folders, created, updated };
   });

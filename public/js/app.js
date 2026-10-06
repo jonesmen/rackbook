@@ -34,7 +34,7 @@ function parseUrl() {
   if ((m = p.match(/^\/docs\/f\/([^/]+)$/))) return { page: 'docs', folder: decodeURIComponent(m[1]), tag: qs.get('tag'), q: '' };
   if ((m = p.match(/^\/doc\/([^/]+)\/edit$/))) return { page: 'edit', docId: decodeURIComponent(m[1]) };
   if ((m = p.match(/^\/doc\/([^/]+)$/))) return { page: 'doc', docId: decodeURIComponent(m[1]) };
-  if (p === '/new') return { page: 'edit', docId: null, folder: qs.get('folder') };
+  if (p === '/new') return { page: 'edit', docId: null, folder: qs.get('folder'), parent: qs.get('parent') };
   if (p === '/search') return { page: 'search', sq: qs.get('q') || '' };
   if (p === '/notifications') return { page: 'notifications' };
   if (p === '/settings') return { page: 'settings' };
@@ -46,7 +46,7 @@ function urlFor(s) {
   switch (s.page) {
     case 'docs': return (s.folder ? '/docs/f/' + encodeURIComponent(s.folder) : '/docs') + tag;
     case 'doc': return '/doc/' + encodeURIComponent(s.docId);
-    case 'edit': return s.draft && s.draft.id ? `/doc/${encodeURIComponent(s.draft.id)}/edit` : '/new';
+    case 'edit': return s.draft && s.draft.id ? `/doc/${encodeURIComponent(s.draft.id)}/edit` : '/new' + (s.draft && s.draft.parent ? '?parent=' + encodeURIComponent(s.draft.parent) : '');
     case 'search': return '/search' + (s.sq ? '?q=' + encodeURIComponent(s.sq) : '');
     case 'notifications': case 'settings': case 'admin': return '/' + s.page;
     default: return '/';
@@ -63,6 +63,7 @@ class App extends Component {
     page: 'dashboard', folder: null, docId: null, q: '', sq: '', tag: null, filterOpen: false, menuId: null,
     showAllFolders: false, draft: null, draftBase: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
     userMenu: false, rev: null, saving: false,
+    openFolders: (() => { try { return JSON.parse(localStorage.getItem('rackbook.openFolders')) || []; } catch { return []; } })(),
   };
 
   // ---------- Lebenszyklus ----------
@@ -137,10 +138,61 @@ class App extends Component {
   canEdit() { return this.state.user && (this.state.user.role === 'editor' || this.state.user.role === 'admin'); }
   isAdmin() { return this.state.user && this.state.user.role === 'admin'; }
   F(id) { return this.state.folders.find(f => f.id === id) || { ...UNKNOWN_FOLDER, id }; }
+  // Ordnerbaum: Elternverweise auf unbekannte Ordner gelten als oberste Ebene.
+  fParent(f) { return f.parent && this.state.folders.some(x => x.id === f.parent) ? f.parent : null; }
+  subFolders(id) { return this.state.folders.filter(f => this.fParent(f) === (id || null)); }
+  folderChain(id) {
+    const out = [];
+    let f = this.state.folders.find(x => x.id === id), guard = 0;
+    while (f && guard++ < 20) { out.unshift(f); const p = this.fParent(f); f = p && this.state.folders.find(x => x.id === p); }
+    return out;
+  }
+  folderPath(id) { return this.folderChain(id).map(f => f.name).join(' / ') || this.F(id).name; }
+  folderSet(id) {
+    const out = new Set([id]);
+    let added = true;
+    while (added) { added = false; for (const f of this.state.folders) { const p = this.fParent(f); if (p && out.has(p) && !out.has(f.id)) { out.add(f.id); added = true; } } }
+    return out;
+  }
+  folderTreeList() {
+    const out = [];
+    const walk = (p, depth) => this.subFolders(p).forEach(f => { out.push({ f, depth }); walk(f.id, depth + 1); });
+    walk(null, 0);
+    return out;
+  }
+  docChildren(id) { return this.state.docs.filter(d => d.parent === id).sort((a, b) => a.title.localeCompare(b.title, 'de')); }
+  docChain(d) {
+    const out = [];
+    let cur = d && d.parent && this.doc(d.parent), guard = 0;
+    while (cur && guard++ < 20) { out.unshift(cur); cur = cur.parent && this.doc(cur.parent); }
+    return out;
+  }
+  docDescendantIds(id) {
+    const out = [];
+    const walk = pid => this.state.docs.filter(d => d.parent === pid).forEach(d => { if (!out.includes(d.id)) { out.push(d.id); walk(d.id); } });
+    walk(id);
+    return out;
+  }
+  // Dokumente eines Ordners als Baum (für die Auswahl der Elternseite)
+  docTreeList(folder, excludeIds = []) {
+    const inFolder = this.state.docs.filter(d => d.folder === folder && !excludeIds.includes(d.id));
+    const ids = new Set(inFolder.map(d => d.id));
+    const out = [];
+    const walk = (p, depth) => inFolder.filter(d => ((d.parent && ids.has(d.parent)) ? d.parent : null) === p)
+      .sort((a, b) => a.title.localeCompare(b.title, 'de')).forEach(d => { out.push({ d, depth }); walk(d.id, depth + 1); });
+    walk(null, 0);
+    return out;
+  }
+  toggleFolderOpen(id) {
+    const open = new Set(this.state.openFolders);
+    if (open.has(id)) open.delete(id); else open.add(id);
+    try { localStorage.setItem('rackbook.openFolders', JSON.stringify([...open])); } catch { /* egal */ }
+    this.setState({ openFolders: [...open] });
+  }
   doc(id) { return this.state.docs.find(d => d.id === id); }
   isDirty() {
     const { draft, draftBase, page } = this.state;
-    return page === 'edit' && draft && draftBase && ['title', 'folder', 'tags', 'content'].some(k => draft[k] !== draftBase[k]);
+    return page === 'edit' && draft && draftBase && ['title', 'folder', 'parent', 'tags', 'content'].some(k => draft[k] !== draftBase[k]);
   }
   flash(msg, undoDocId, isErr) {
     clearTimeout(this._t);
@@ -176,7 +228,7 @@ class App extends Component {
     if (r.page === 'edit') {
       if (!this.canEdit()) return this.go('dashboard', null, true);
       if (r.docId) { const d = this.doc(r.docId); return d ? this.openEditor(d, null, replace) : this.go('dashboard', null, true); }
-      return this.openEditor(null, r.folder, replace);
+      return this.openEditor(null, r.folder, replace, r.parent);
     }
     if (r.page === 'admin' && !this.isAdmin()) return this.go('dashboard', null, true);
     this.go(r.page, r, replace);
@@ -200,23 +252,25 @@ class App extends Component {
   };
 
   // ---------- Dokumentaktionen ----------
-  openEditor(d, folder, replace) {
+  openEditor(d, folder, replace, parent) {
     const first = this.state.folders[0] ? this.state.folders[0].id : '';
+    const p = parent && this.doc(parent);
     const draft = d
-      ? { id: d.id, version: d.version, title: d.title, folder: d.folder, tags: d.tags.join(', '), content: d.content }
-      : { id: null, title: '', folder: (folder && this.state.folders.some(f => f.id === folder)) ? folder : (this.state.folder || first), tags: '', content: '## Übersicht\n\n' };
+      ? { id: d.id, version: d.version, title: d.title, folder: d.folder, parent: d.parent || '', tags: d.tags.join(', '), content: d.content }
+      : { id: null, title: '', folder: p ? p.folder : ((folder && this.state.folders.some(f => f.id === folder)) ? folder : (this.state.folder || first)), parent: p ? p.id : '', tags: p ? p.tags.join(', ') : '', content: '## Übersicht\n\n' };
     this.go('edit', { draft, draftBase: { ...draft } }, replace);
   }
   async save(force) {
     const dr = this.state.draft;
     if (!dr || this.state.saving) return;
     this.setState({ saving: true });
-    const body = { title: dr.title, folder: dr.folder, tags: dr.tags, content: dr.content };
+    const body = { title: dr.title, folder: dr.folder, parent: dr.parent || '', tags: dr.tags, content: dr.content };
     try {
       const r = dr.id
         ? await api('/docs/' + encodeURIComponent(dr.id), { method: 'PUT', body: { ...body, version: force ? undefined : dr.version } })
         : await api('/docs', { method: 'POST', body });
       this.upsertDoc(r.doc);
+      if (dr.id) await this.refresh(); // Unterseiten können mitgewandert sein
       this.setState({ saving: false });
       this.go('doc', { docId: r.doc.id }, true, true);
       this.flash('Gespeichert');
@@ -239,14 +293,15 @@ class App extends Component {
   }
   async removeDoc(d) {
     try {
-      await api('/docs/' + encodeURIComponent(d.id), { method: 'DELETE' });
-      this.setState(s => ({ docs: s.docs.filter(x => x.id !== d.id), menuId: null }));
+      const r = await api('/docs/' + encodeURIComponent(d.id), { method: 'DELETE' });
+      const gone = new Set(r.deleted || [d.id]);
+      this.setState(s => ({ docs: s.docs.filter(x => !gone.has(x.id)), menuId: null }));
       if (this.state.page === 'doc' && this.state.docId === d.id) this.go('docs', { folder: d.folder, tag: null, q: '' });
-      this.flash('„' + d.title + '“ gelöscht', d.id);
+      this.flash('„' + d.title + '“' + (gone.size > 1 ? ` und ${gone.size - 1} Unterseite(n)` : '') + ' gelöscht', d.id);
     } catch (e) { this.fail(e); }
   }
   async restoreDoc(id) {
-    try { const r = await api(`/docs/${encodeURIComponent(id)}/restore`, { method: 'POST', body: {} }); this.upsertDoc(r.doc); this.setState({ toast: null, undoDocId: null }); this.flash('Wiederhergestellt'); } catch (e) { this.fail(e); }
+    try { const r = await api(`/docs/${encodeURIComponent(id)}/restore`, { method: 'POST', body: {} }); (r.docs || [r.doc]).forEach(x => this.upsertDoc(x)); this.setState({ toast: null, undoDocId: null }); this.flash('Wiederhergestellt'); } catch (e) { this.fail(e); }
   }
   async purgeDoc(d) {
     if (!confirm(`„${d.title}“ endgültig löschen? Das kann nicht rückgängig gemacht werden.`)) return;
@@ -276,9 +331,17 @@ class App extends Component {
     try {
       const r = id ? await api('/folders/' + encodeURIComponent(id), { method: 'PATCH', body: v }) : await api('/folders', { method: 'POST', body: v });
       this.setState(s => ({ folders: id ? s.folders.map(f => (f.id === id ? r.folder : f)) : s.folders.concat(r.folder) }));
+      if (r.folder.parent && !this.state.openFolders.includes(r.folder.parent)) this.toggleFolderOpen(r.folder.parent);
       this.flash(id ? 'Ordner gespeichert' : 'Ordner angelegt');
       return true;
     } catch (e) { this.fail(e); return false; }
+  }
+  async newSubfolder(parent) {
+    const name = prompt(parent ? `Name des neuen Unterordners in „${this.folderPath(parent)}“:` : 'Name des neuen Ordners:');
+    if (!name || !name.trim()) return;
+    const p = parent && this.F(parent);
+    const ok = await this.saveFolder(null, { name: name.trim(), icon: 'folder', hue: p ? p.hue : 200, parent: parent || null });
+    if (ok) this.flash(parent ? 'Unterordner angelegt' : 'Ordner angelegt');
   }
   async deleteFolder(f) {
     if (!confirm(`Ordner „${f.name}“ löschen?`)) return;
@@ -484,7 +547,7 @@ class App extends Component {
           </nav>
           <div class="nav">
             ${expanded && html`<div class="nav-label">ORDNER</div>`}
-            ${s.folders.map(f => navItem(f.name, f.icon, s.page === 'docs' && s.folder === f.id, () => this.go('docs', { folder: f.id, tag: null, q: '' }), { folder: true, count: s.docs.filter(d => d.folder === f.id).length }))}
+            ${this.renderFolderTree(expanded)}
           </div>
         </div>
         <div class="sb-foot">
@@ -507,10 +570,37 @@ class App extends Component {
       </aside>`;
   }
 
+  renderFolderTree(expanded) {
+    const s = this.state;
+    const curFolder = s.page === 'docs' ? s.folder : s.page === 'doc' && this.doc(s.docId) ? this.doc(s.docId).folder : null;
+    const autoOpen = new Set(curFolder ? this.folderChain(curFolder).map(f => f.id) : []);
+    const open = id => s.openFolders.includes(id) || autoOpen.has(id);
+    const items = [];
+    const walk = (p, depth) => this.subFolders(p).forEach(f => {
+      const kids = this.subFolders(f.id).length > 0;
+      const count = s.docs.filter(d => this.folderSet(f.id).has(d.folder)).length;
+      const active = s.page === 'docs' && s.folder === f.id;
+      items.push(html`
+        <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '')} title=${this.folderPath(f.id)} style=${expanded ? { paddingLeft: (11 + depth * 14) + 'px' } : null}
+          onClick=${() => this.go('docs', { folder: f.id, tag: null, q: '' })}>
+          <span class="ms">${f.icon}</span>
+          ${expanded && html`<span class="grow">${f.name}</span>`}
+          ${expanded && html`<span class="count">${count}</span>`}
+          ${expanded && (kids
+            ? html`<span class="ms tree-chev" role="button" aria-label=${open(f.id) ? 'Zuklappen' : 'Aufklappen'} onClick=${e => { stop(e); this.toggleFolderOpen(f.id); }}>${open(f.id) ? 'expand_more' : 'chevron_right'}</span>`
+            : html`<span class="tree-chev-space"></span>`)}
+        </button>`);
+      if (expanded && kids && open(f.id)) walk(f.id, depth + 1);
+    });
+    walk(null, 0);
+    return items;
+  }
+
   // ---------- Zeilen-Modell ----------
   row(d) {
     const f = this.F(d.folder);
-    return { d, f, c: fcol(f.hue), fileName: fileName(d), words: fmtWords(wordsOf(d.content)), updatedLabel: fmtDate(d.updated), excerpt: excerpt(d.content) };
+    const chain = this.docChain(d);
+    return { d, f, path: this.folderPath(d.folder) + (chain.length ? ' › ' + chain.map(x => x.title).join(' › ') : ''), kids: this.docChildren(d.id).length, c: fcol(f.hue), fileName: fileName(d), words: fmtWords(wordsOf(d.content)), updatedLabel: fmtDate(d.updated), excerpt: excerpt(d.content) };
   }
 
   // ---------- Dashboard ----------
@@ -588,20 +678,28 @@ class App extends Component {
   renderDocs() {
     const s = this.state, docs = s.docs;
     const ql = s.q.trim().toLowerCase();
-    const listed = byDate(docs.filter(d => (!s.folder || d.folder === s.folder) && (!s.tag || d.tags.includes(s.tag))
+    // Im Ordner ohne Suche/Filter: nur oberste Seiten dieses Ordners (Unterseiten hängen an ihrer Elternseite).
+    const scope = s.folder ? this.folderSet(s.folder) : null;
+    const plainFolder = s.folder && !s.tag && !ql;
+    const listed = byDate(docs.filter(d => (plainFolder ? d.folder === s.folder && !(d.parent && this.doc(d.parent)) : (!scope || scope.has(d.folder)))
+      && (!s.tag || d.tags.includes(s.tag))
       && (!ql || (d.title + ' ' + d.content + ' ' + d.tags.join(' ')).toLowerCase().includes(ql))));
     const tagCounts = {};
     docs.forEach(d => d.tags.forEach(t => { tagCounts[t] = (tagCounts[t] || 0) + 1; }));
     const tagNames = Object.keys(tagCounts).sort((a, b) => tagCounts[b] - tagCounts[a] || a.localeCompare(b));
     const title = s.folder ? this.F(s.folder).name : 'Dokumente';
-    const showFolders = !s.folder && !s.tag && !ql;
-    const folders = s.showAllFolders ? s.folders : s.folders.slice(0, 4);
+    const showFolders = !s.tag && !ql;
+    const levelFolders = this.subFolders(s.folder || null);
+    const folders = s.folder || s.showAllFolders ? levelFolders : levelFolders.slice(0, 4);
+    const chain = s.folder ? this.folderChain(s.folder) : [];
     const canEdit = this.canEdit();
     return html`
       <div class="page g24" data-screen-label="Dokumente">
         <div class="page-head">
           <div style=${{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-            ${s.folder && html`<div class="crumbs"><button type="button" class="c" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Dokumente</button><span class="ms">chevron_right</span><span class="cur">${title}</span></div>`}
+            ${s.folder && html`<div class="crumbs"><button type="button" class="c" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Dokumente</button>
+              ${chain.slice(0, -1).map(f => html`<span class="ms">chevron_right</span><button type="button" class="c" onClick=${() => this.go('docs', { folder: f.id, tag: null, q: '' })}>${f.name}</button>`)}
+              <span class="ms">chevron_right</span><span class="cur">${title}</span></div>`}
             <h1 class="h1">${title}</h1>
           </div>
           ${this.headIcons()}
@@ -622,21 +720,27 @@ class App extends Component {
           <div class="spacer"></div>
           ${this.actionButtons()}
         </div>
-        ${showFolders && html`
+        ${showFolders && (levelFolders.length > 0 || (s.folder && canEdit)) && html`
           <div class="section g14">
-            <div class="row-between"><h2 class="h2">Ordner</h2>
-              ${s.folders.length > 4 && html`<button type="button" class="link-acc" onClick=${() => this.setState({ showAllFolders: !s.showAllFolders })}>${s.showAllFolders ? 'Weniger anzeigen' : 'Alle anzeigen'}</button>`}</div>
+            <div class="row-between"><h2 class="h2">${s.folder ? 'Unterordner' : 'Ordner'}</h2>
+              <div style=${{ display: 'flex', gap: '14px' }}>
+                ${canEdit && html`<button type="button" class="link-acc" onClick=${() => this.newSubfolder(s.folder || null)}>${s.folder ? '+ Unterordner' : '+ Ordner'}</button>`}
+                ${!s.folder && levelFolders.length > 4 && html`<button type="button" class="link-acc" onClick=${() => this.setState({ showAllFolders: !s.showAllFolders })}>${s.showAllFolders ? 'Weniger anzeigen' : 'Alle anzeigen'}</button>`}
+              </div></div>
+            ${levelFolders.length === 0 ? html`<div class="small muted">Noch keine Unterordner.</div>` : html`
             <div class="grid-folders">
               ${folders.map(f => {
-                const ds = docs.filter(d => d.folder === f.id);
+                const set = this.folderSet(f.id);
+                const ds = docs.filter(d => set.has(d.folder));
+                const subs = this.subFolders(f.id).length;
                 return html`
                   <button type="button" class="card click folder-card" onClick=${() => this.go('docs', { folder: f.id, tag: null, q: '' })}>
                     <div class="ficon s36" style=${fcol(f.hue)}><span class="ms">${f.icon}</span></div>
                     <div class="name">${f.name}</div>
-                    <div class="meta">${ds.length} ${ds.length === 1 ? 'Dokument' : 'Dokumente'} • ${fmtWords(ds.reduce((n, d) => n + wordsOf(d.content), 0))}</div>
+                    <div class="meta">${ds.length} ${ds.length === 1 ? 'Dokument' : 'Dokumente'}${subs ? ` • ${subs} ${subs === 1 ? 'Unterordner' : 'Unterordner'}` : ''} • ${fmtWords(ds.reduce((n, d) => n + wordsOf(d.content), 0))}</div>
                   </button>`;
               })}
-            </div>
+            </div>`}
           </div>`}
         <div class="section g14">
           <h2 class="h2">${s.folder || s.tag || ql ? `${listed.length} ${listed.length === 1 ? 'Dokument' : 'Dokumente'}` : 'Zuletzt bearbeitet'}</h2>
@@ -649,7 +753,7 @@ class App extends Component {
                 <div class="dtable-row" key=${d.id}>
                   <button type="button" class="name" onClick=${() => this.go('doc', { docId: d.id })}>
                     <div class="ficon" style=${r.c}><span class="ms s18">description</span></div>
-                    <div style=${{ minWidth: 0 }}><div class="fn">${r.fileName}</div><div class="fm">${r.f.name}</div></div>
+                    <div style=${{ minWidth: 0 }}><div class="fn">${r.fileName}</div><div class="fm">${plainFolder ? r.f.name : r.path}${r.kids ? ` · ${r.kids} ${r.kids === 1 ? 'Unterseite' : 'Unterseiten'}` : ''}</div></div>
                   </button>
                   <span class="val">${r.words}</span>
                   <span class="val">${r.updatedLabel}</span>
@@ -659,17 +763,23 @@ class App extends Component {
                       <div class="menu row-menu" onClick=${stop}>
                         <button type="button" class="menu-item" onClick=${() => this.go('doc', { docId: d.id })}><span class="ms">visibility</span>Öffnen</button>
                         ${canEdit && html`<button type="button" class="menu-item" onClick=${() => this.openEditor(d)}><span class="ms">edit</span>Bearbeiten</button>`}
+                        ${canEdit && html`<button type="button" class="menu-item" onClick=${() => this.openEditor(null, d.folder, false, d.id)}><span class="ms">note_add</span>Unterseite anlegen</button>`}
                         <button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); this.toggleBookmark(d); }}><span class="ms">bookmark</span>${d.bookmarked ? 'Lesezeichen entfernen' : 'Lesezeichen setzen'}</button>
                         <button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); download(fileName(d), docMd(d)); }}><span class="ms">download</span>Als .md herunterladen</button>
-                        ${canEdit && html`<div class="menu-sep"></div><button type="button" class="menu-item danger" onClick=${() => this.removeDoc(d)}><span class="ms">delete</span>Löschen</button>`}
+                        ${canEdit && html`<div class="menu-sep"></div><button type="button" class="menu-item danger" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span>Löschen</button>`}
                       </div>`}
                   </div>
                 </div>`;
             })}
-            ${listed.length === 0 && html`<div class="table-empty"><div class="t">Keine Dokumente gefunden</div><div class="s">Suche oder Filter anpassen${canEdit ? ' – oder ein neues Dokument anlegen' : ''}.</div></div>`}
+            ${listed.length === 0 && html`<div class="table-empty"><div class="t">${plainFolder ? 'Noch keine Dokumente in diesem Ordner' : 'Keine Dokumente gefunden'}</div><div class="s">Suche oder Filter anpassen${canEdit ? ' – oder ein neues Dokument anlegen' : ''}.</div></div>`}
           </div>
         </div>
       </div>`;
+  }
+
+  confirmRemove(d) {
+    const n = this.docDescendantIds(d.id).length;
+    if (confirm(`„${d.title}“${n ? ` und ${n} ${n === 1 ? 'Unterseite' : 'Unterseiten'}` : ''} in den Papierkorb verschieben?`)) this.removeDoc(d);
   }
 
   // ---------- Dokumentansicht ----------
@@ -684,12 +794,16 @@ class App extends Component {
     const f = this.F(d.folder), c = fcol(f.hue);
     const r = md(d.content, { interactive: canEdit });
     const openFolder = () => this.go('docs', { folder: d.folder, tag: null, q: '' });
+    const fchain = this.folderChain(d.folder);
+    const dchain = this.docChain(d);
+    const kids = this.docChildren(d.id);
     return html`
       <div class="page g18" data-screen-label="Dokument">
         <div class="row-between">
           <div class="crumbs">
             <button type="button" class="c" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Dokumente</button><span class="ms">chevron_right</span>
-            <button type="button" class="c" onClick=${openFolder}>${f.name}</button><span class="ms">chevron_right</span>
+            ${(fchain.length ? fchain : [f]).map(x => html`<button type="button" class="c" onClick=${() => this.go('docs', { folder: x.id, tag: null, q: '' })}>${x.name}</button><span class="ms">chevron_right</span>`)}
+            ${dchain.map(x => html`<button type="button" class="c" onClick=${() => this.go('doc', { docId: x.id })}>${x.title}</button><span class="ms">chevron_right</span>`)}
             <span class="cur">${d.title}</span>
           </div>
           ${this.headIcons()}
@@ -709,14 +823,34 @@ class App extends Component {
             <button type="button" class="sq-btn" title=${d.bookmarked ? 'Lesezeichen entfernen' : 'Lesezeichen setzen'} aria-pressed=${d.bookmarked} onClick=${() => this.toggleBookmark(d)}><span class=${'ms' + (d.bookmarked ? ' fill' : '')}>bookmark</span></button>
             <button type="button" class="sq-btn" title="Versionsverlauf" onClick=${() => this.openRevisions(d)}><span class="ms">history</span></button>
             <button type="button" class="sq-btn" title="Als .md herunterladen" onClick=${() => download(fileName(d), docMd(d))}><span class="ms">download</span></button>
-            ${canEdit && html`<button type="button" class="sq-btn" title="Löschen" onClick=${() => { if (confirm(`„${d.title}“ in den Papierkorb verschieben?`)) this.removeDoc(d); }}><span class="ms">delete</span></button>`}
+            ${canEdit && html`<button type="button" class="sq-btn" title="Unterseite anlegen" onClick=${() => this.openEditor(null, d.folder, false, d.id)}><span class="ms">note_add</span></button>`}
+            ${canEdit && html`<button type="button" class="sq-btn" title="Löschen" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span></button>`}
             ${canEdit && html`<button type="button" class="btn btn-primary edit" onClick=${() => this.openEditor(d)}><span class="ms">edit</span>Bearbeiten</button>`}
           </div>
         </div>
         <div class="doc-body">
-          <article class="article">
-            <div class="md-body" onClick=${e => this.onArticleClick(e, d)} onKeyDown=${e => this.onArticleKey(e, d)} dangerouslySetInnerHTML=${{ __html: r.html }}></div>
-          </article>
+          <div class="doc-main">
+            <article class="article">
+              <div class="md-body" onClick=${e => this.onArticleClick(e, d)} onKeyDown=${e => this.onArticleKey(e, d)} dangerouslySetInnerHTML=${{ __html: r.html }}></div>
+            </article>
+            ${(kids.length > 0 || canEdit) && html`
+              <div class="section g14 subpages">
+                <div class="row-between"><h2 class="h2 s16">Unterseiten${kids.length ? ` (${kids.length})` : ''}</h2>
+                  ${canEdit && html`<button type="button" class="link-acc" onClick=${() => this.openEditor(null, d.folder, false, d.id)}>+ Unterseite</button>`}</div>
+                ${kids.length > 0 ? html`
+                  <div class="card list">
+                    ${kids.map(k => {
+                      const n = this.docChildren(k.id).length;
+                      return html`
+                        <button type="button" class="list-row" onClick=${() => this.go('doc', { docId: k.id })}>
+                          <div class="ficon s30" style=${c}><span class="ms">description</span></div>
+                          <div style=${{ flex: 1, minWidth: 0 }}><div class="t">${k.title}</div><div class="m">${excerpt(k.content) || '—'}${n ? ` · ${n} ${n === 1 ? 'Unterseite' : 'Unterseiten'}` : ''}</div></div>
+                          <div class="d">${fmtDate(k.updated)}</div>
+                        </button>`;
+                    })}
+                  </div>` : html`<div class="small muted">Noch keine Unterseiten. Unterseiten eignen sich für Detailthemen eines Projekts, z. B. Konfiguration, Backup oder Runbooks.</div>`}
+              </div>`}
+          </div>
           ${r.toc.length > 1 && html`
             <aside class="toc">
               <div class="toc-label">AUF DIESER SEITE</div>
@@ -759,9 +893,23 @@ class App extends Component {
           <button type="button" class="btn btn-primary save" disabled=${s.saving} onClick=${() => this.save()}><span class="ms s16">check</span>${s.saving ? 'Speichert …' : 'Speichern'}</button>
         </div>
         <div style=${{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <label class="field-chip"><span class="ms">folder</span>
-            <select value=${dr.folder} onChange=${e => this.setDraft({ folder: e.target.value })} aria-label="Ordner">
-              ${s.folders.map(f => html`<option value=${f.id}>${f.name}</option>`)}
+          <label class="field-chip" title=${dr.parent ? 'Unterseiten liegen im Ordner ihrer Elternseite' : 'Ordner'}><span class="ms">folder</span>
+            <select value=${dr.folder} disabled=${!!dr.parent} onChange=${e => {
+              const folder = e.target.value;
+              const p = dr.parent && this.doc(dr.parent);
+              this.setDraft({ folder, parent: p && p.folder === folder ? dr.parent : '' });
+            }} aria-label="Ordner">
+              ${this.folderTreeList().map(({ f, depth }) => html`<option value=${f.id}>${'\u00a0\u00a0\u00a0'.repeat(depth)}${depth ? '└ ' : ''}${f.name}</option>`)}
+            </select>
+          </label>
+          <label class="field-chip"><span class="ms">account_tree</span>
+            <select value=${dr.parent || ''} onChange=${e => {
+              const parent = e.target.value;
+              const p = parent && this.doc(parent);
+              this.setDraft({ parent, folder: p ? p.folder : dr.folder });
+            }} aria-label="Übergeordnete Seite">
+              <option value="">Oberste Ebene (keine Elternseite)</option>
+              ${this.docTreeList(dr.folder, dr.id ? [dr.id, ...this.docDescendantIds(dr.id)] : []).map(({ d: x, depth }) => html`<option value=${x.id}>${'\u00a0\u00a0\u00a0'.repeat(depth)}${depth ? '└ ' : ''}Unterseite von: ${x.title}</option>`)}
             </select>
           </label>
           <label class="field-chip tags"><span class="ms">sell</span>

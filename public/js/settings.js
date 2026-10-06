@@ -173,37 +173,46 @@ function SecurityPanel({ app }) {
 }
 
 // ---------------- Ordner ----------------
-function FolderRow({ app, f, count }) {
-  const [v, setV] = useState({ name: f.name, icon: f.icon, hue: f.hue });
-  useEffect(() => setV({ name: f.name, icon: f.icon, hue: f.hue }), [f.name, f.icon, f.hue]);
-  const dirty = v.name !== f.name || v.icon !== f.icon || Number(v.hue) !== f.hue;
+function FolderRow({ app, f, count, depth = 0 }) {
+  const [v, setV] = useState({ name: f.name, icon: f.icon, hue: f.hue, parent: f.parent || '' });
+  useEffect(() => setV({ name: f.name, icon: f.icon, hue: f.hue, parent: f.parent || '' }), [f.name, f.icon, f.hue, f.parent]);
+  const dirty = v.name !== f.name || v.icon !== f.icon || Number(v.hue) !== f.hue || v.parent !== (f.parent || '');
+  const blocked = app.folderSet(f.id); // sich selbst und eigene Unterordner nicht als Elternordner anbieten
   const c = fcol(v.hue);
   return html`
-    <div>
+    <div style=${{ paddingLeft: (depth * 22) + 'px', gap: '8px' }}>
       <div class="ficon s32" style=${c}><${Icon} name=${/^[a-z0-9_]+$/.test(v.icon) ? v.icon : 'folder'} /></div>
-      <input class="input" style=${{ flex: '1 1 160px' }} value=${v.name} maxlength="60" onInput=${e => setV({ ...v, name: e.target.value })} aria-label="Name" />
-      <input class="input mono" style=${{ width: '140px' }} value=${v.icon} maxlength="40" onInput=${e => setV({ ...v, icon: e.target.value.trim() })} aria-label="Icon" title="Material-Symbol-Name, z. B. dns, lan, router" />
-      <input type="range" min="0" max="360" value=${v.hue} onInput=${e => setV({ ...v, hue: Number(e.target.value) })} aria-label="Farbton" style=${{ width: '90px' }} />
+      <input class="input" style=${{ flex: '1 1 110px', minWidth: 0 }} value=${v.name} maxlength="60" onInput=${e => setV({ ...v, name: e.target.value })} aria-label="Name" />
+      <input class="input mono" style=${{ width: '110px', flexShrink: 0 }} value=${v.icon} maxlength="40" onInput=${e => setV({ ...v, icon: e.target.value.trim() })} aria-label="Icon" title="Material-Symbol-Name, z. B. dns, lan, router" />
+      <input type="range" min="0" max="360" value=${v.hue} onInput=${e => setV({ ...v, hue: Number(e.target.value) })} aria-label="Farbton" style=${{ width: '64px', flexShrink: 0 }} />
+      <select class="input folder-row-parent" value=${v.parent} onChange=${e => setV({ ...v, parent: e.target.value })} aria-label="Übergeordneter Ordner" title="Übergeordneter Ordner">
+        <option value="">Oberste Ebene</option>
+        ${app.folderTreeList().filter(x => !blocked.has(x.f.id)).map(({ f: x, depth }) => html`<option value=${x.id}>${'\u00a0\u00a0'.repeat(depth)}in: ${x.name}</option>`)}
+      </select>
       <span class="xs muted" style=${{ width: '28px', textAlign: 'right' }}>${count}</span>
-      <button type="button" class="btn btn-ghost sm" disabled=${!dirty} onClick=${() => app.saveFolder(f.id, v)}>Speichern</button>
+      <button type="button" class="btn btn-ghost sm" disabled=${!dirty} onClick=${() => app.saveFolder(f.id, { ...v, parent: v.parent || null })}>Speichern</button>
       ${app.isAdmin() && html`<button type="button" class="more-btn" title="Ordner löschen" onClick=${() => app.deleteFolder(f)}><span class="ms s18">delete</span></button>`}
     </div>`;
 }
 
 function FoldersPanel({ app }) {
-  const [n, setN] = useState({ name: '', icon: 'folder', hue: 200 });
-  const add = e => { e.preventDefault(); if (!n.name.trim()) return; app.saveFolder(null, n).then(ok => ok && setN({ name: '', icon: 'folder', hue: 200 })); };
+  const [n, setN] = useState({ name: '', icon: 'folder', hue: 200, parent: '' });
+  const add = e => { e.preventDefault(); if (!n.name.trim()) return; app.saveFolder(null, { ...n, parent: n.parent || null }).then(ok => ok && setN({ name: '', icon: 'folder', hue: 200, parent: '' })); };
   return html`
     <div class="panel">
       <${PanelHead} title="Ordner" desc="Ordner strukturieren die Dokumentation. Icons sind Namen aus Material Symbols (z. B. lan, dns, router, storage, security)." />
       <div class="list-plain">
-        ${app.state.folders.map(f => html`<${FolderRow} key=${f.id} app=${app} f=${f} count=${app.state.docs.filter(d => d.folder === f.id).length} />`)}
+        ${app.folderTreeList().map(({ f, depth }) => html`<${FolderRow} key=${f.id} app=${app} f=${f} depth=${depth} count=${app.state.docs.filter(d => d.folder === f.id).length} />`)}
       </div>
       <form onSubmit=${add} style=${{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
         <input class="input" style=${{ flex: '1 1 200px' }} placeholder="Neuer Ordner" value=${n.name} maxlength="60" onInput=${e => setN({ ...n, name: e.target.value })} />
         <input class="input mono" style=${{ width: '140px' }} placeholder="Icon" value=${n.icon} maxlength="40" onInput=${e => setN({ ...n, icon: e.target.value.trim() })} />
         <input type="range" min="0" max="360" value=${n.hue} onInput=${e => setN({ ...n, hue: Number(e.target.value) })} aria-label="Farbton" style=${{ width: '90px' }} />
         <div class="hue-swatch" style=${{ background: fcol(n.hue).color }}></div>
+        <select class="input folder-row-parent" value=${n.parent} onChange=${e => setN({ ...n, parent: e.target.value })} aria-label="Übergeordneter Ordner">
+          <option value="">Oberste Ebene</option>
+          ${app.folderTreeList().map(({ f, depth }) => html`<option value=${f.id}>${'\u00a0\u00a0'.repeat(depth)}in: ${f.name}</option>`)}
+        </select>
         <button class="btn btn-ghost md"><${Icon} name="create_new_folder" />Anlegen</button>
       </form>
     </div>`;

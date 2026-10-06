@@ -116,9 +116,9 @@ export function McpPanel({ app }) {
           })}
         </div>
         <div>
-          <div style=${{ fontSize: '12px', fontWeight: 600, color: 'var(--ink3)', marginBottom: '6px' }}>Ordner (keine Auswahl = alle Ordner)</div>
+          <div style=${{ fontSize: '12px', fontWeight: 600, color: 'var(--ink3)', marginBottom: '6px' }}>Ordner (keine Auswahl = alle Ordner; Unterordner sind jeweils eingeschlossen)</div>
           <div class="tags-wrap">
-            ${app.state.folders.map(fo => html`<button type="button" class=${'tag-chip' + (f.folders.includes(fo.id) ? ' sel-chip' : '')} onClick=${() => toggleFolder(fo.id)}>${f.folders.includes(fo.id) ? '✓ ' : ''}${fo.name}</button>`)}
+            ${app.folderTreeList().map(({ f: fo }) => html`<button type="button" class=${'tag-chip' + (f.folders.includes(fo.id) ? ' sel-chip' : '')} onClick=${() => toggleFolder(fo.id)}>${f.folders.includes(fo.id) ? '✓ ' : ''}${app.folderPath(fo.id)}</button>`)}
           </div>
         </div>
         ${err && html`<div class="err">${err}</div>`}

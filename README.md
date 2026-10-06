@@ -6,7 +6,8 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 
 **Dokumentation**
 - Dashboard mit angepinnten Dokumenten, zuletzt bearbeiteten Dokumenten und offenen To-dos (`- [ ]` aus allen Dokumenten, direkt abhakbar)
-- Ordner (frei anlegbar, mit Icon und Farbe), Tags, Tag-Filter, persönliche Lesezeichen
+- Ordner mit **Unterordnern** (bis 5 Ebenen, frei anlegbar, mit Icon und Farbe), Tags, Tag-Filter, persönliche Lesezeichen
+- **Unterseiten**: Dokumente lassen sich unter einem Hauptdokument anordnen (z. B. ein Projekt mit Unterseiten für Konfiguration, Backup, Runbooks); Brotkrumen-Pfad, Unterseiten-Liste, Verschieben und Löschen samt Unterseiten
 - Markdown-Editor mit Toolbar, Live-Vorschau, Zeilenumbruch, Schriftgröße, `Strg/⌘ + S`
 - Dokumentansicht mit Inhaltsverzeichnis, kopierbaren Code-Blöcken und abhakbaren Checklisten
 - Globale Volltextsuche mit Trefferhervorhebung (Titel, Inhalt, Tags, IPs, Befehle)
@@ -119,7 +120,7 @@ claude mcp add --transport http rackbook https://docs.example.de/mcp \
   "env": { "AUTH": "Bearer rbm_…" } } } }
 ```
 
-**Damit die KI weiß, wie und wo sie dokumentiert**, bekommt sie beim Verbinden eine Anleitung: alle Ordner mit IDs, vorhandene Tags, unterstütztes Markdown, empfohlene Strukturen für Dienste, Hosts und Runbooks, Regeln (erst suchen, dann schreiben; keine Geheimnisse speichern; nichts erfinden) sowie die Hausregeln aus der Verwaltung.
+**Damit die KI weiß, wie und wo sie dokumentiert**, bekommt sie beim Verbinden eine Anleitung: den Ordnerbaum mit IDs, die Regel „pro Projekt ein Hauptdokument mit Unterseiten“, vorhandene Tags, unterstütztes Markdown, empfohlene Strukturen für Dienste, Hosts und Runbooks, Regeln (erst suchen, dann schreiben; keine Geheimnisse speichern; nichts erfinden) sowie die Hausregeln aus der Verwaltung.
 
 | Werkzeug | Recht | Zweck |
 |---|---|---|
