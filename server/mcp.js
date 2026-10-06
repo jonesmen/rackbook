@@ -8,6 +8,7 @@ import {
   normTitle, normTags, normContent, folderExists, insertDoc, saveRevision, ctrlStrip,
 } from './routes/docs.js';
 import { excerpt } from '../public/js/md.js';
+import { folderAncestors, folderDescendants, checkFolderParent, checkDocParent, moveDocSubtree, docDescendants, docAncestors } from './tree.js';
 
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 export const SCOPES = ['read', 'write', 'delete', 'folders'];
@@ -132,7 +133,9 @@ function authenticate(req) {
     token: { id: row.id, name: row.name },
     // Effektive Rechte: Token ∩ aktuelle Rolle ∩ aktuelle Systemeinstellungen
     scopes: new Set(granted.filter(x => allowed.includes(x))),
-    folders: JSON.parse(row.folders),
+    // Ordner-Freigabe gilt inkl. aller Unterordner
+    folders: [...new Set(JSON.parse(row.folders).flatMap(f => [...folderDescendants(f)]))],
+    rootFolders: JSON.parse(row.folders),
     settings: s,
   };
 }
@@ -143,8 +146,27 @@ const need = (ctx, scope) => {
   if (!ctx.scopes.has(scope)) throw new ToolError(`Keine Berechtigung: Dieses Token hat das Recht „${scope}“ nicht.`);
 };
 const folderOk = (ctx, f) => !ctx.folders.length || ctx.folders.includes(f);
-const folderList = ctx => db.prepare('SELECT id, name, icon FROM folders ORDER BY sort, name').all().filter(f => folderOk(ctx, f.id));
+const folderList = ctx => db.prepare('SELECT id, name, icon, parent_id FROM folders ORDER BY sort, name').all().filter(f => folderOk(ctx, f.id));
 const folderName = id => db.prepare('SELECT name FROM folders WHERE id = ?').get(id)?.name || id;
+// Vollständiger Pfad, z. B. „Projekte / Rackbook“
+const folderPath = id => [...folderAncestors(id).reverse(), id].map(folderName).join(' / ');
+const docTitle = id => db.prepare('SELECT title FROM documents WHERE id = ?').get(id)?.title || id;
+const children = id => db.prepare('SELECT id, title FROM documents WHERE parent_id = ? AND deleted_at IS NULL ORDER BY title').all(id);
+const userName = id => (id ? db.prepare('SELECT display_name FROM users WHERE id = ?').get(id)?.display_name ?? null : null);
+
+// Ordnerbaum als eingerückte Liste (für die Anleitung)
+function folderTree(ctx) {
+  const all = folderList(ctx);
+  const ids = new Set(all.map(f => f.id));
+  const count = id => db.prepare('SELECT COUNT(*) AS n FROM documents WHERE folder_id = ? AND deleted_at IS NULL').get(id).n;
+  const out = [];
+  const walk = (parent, depth) => all.filter(f => (f.parent_id && ids.has(f.parent_id) ? f.parent_id : null) === parent).forEach(f => {
+    out.push(`${'  '.repeat(depth)}- \`${f.id}\` – ${f.name} (${count(f.id)} Dokumente)`);
+    walk(f.id, depth + 1);
+  });
+  walk(null, 0);
+  return out.join('\n');
+}
 const iso = ts => (ts ? new Date(ts).toISOString() : null);
 
 function loadDoc(ctx, id) {
@@ -154,8 +176,9 @@ function loadDoc(ctx, id) {
   return d;
 }
 const meta = d => ({
-  id: d.id, title: d.title, folder: d.folder_id, folderName: folderName(d.folder_id), tags: JSON.parse(d.tags),
-  version: d.version, updatedAt: iso(d.updated_at), updatedBy: d.updated_by_name ?? null, pinned: !!d.pinned,
+  id: d.id, title: d.title, folder: d.folder_id, folderName: folderName(d.folder_id), folderPath: folderPath(d.folder_id),
+  parent: d.parent_id ?? null, parentTitle: d.parent_id ? docTitle(d.parent_id) : null, tags: JSON.parse(d.tags),
+  version: d.version, updatedAt: iso(d.updated_at), updatedBy: d.updated_by_name ?? userName(d.updated_by), pinned: !!d.pinned,
 });
 const withAiTag = (ctx, tags) => {
   const t = normTags(tags);
@@ -168,9 +191,18 @@ function checkFolder(ctx, folder) {
 }
 function updateDoc(ctx, d, next) {
   saveRevision(d, ctx.user.id);
-  db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'mcp'
-              WHERE id = ?`).run(next.title ?? d.title, next.folder ?? d.folder_id, next.tags ?? d.tags, next.content ?? d.content, Date.now(), ctx.user.id, d.id);
+  const folder = next.folder ?? d.folder_id;
+  const parent = next.parent !== undefined ? next.parent : (d.parent_id ?? null);
+  db.prepare(`UPDATE documents SET title = ?, folder_id = ?, parent_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'mcp'
+              WHERE id = ?`).run(next.title ?? d.title, folder, parent, next.tags ?? d.tags, next.content ?? d.content, Date.now(), ctx.user.id, d.id);
+  if (folder !== d.folder_id) moveDocSubtree(d.id, folder);
   return db.prepare('SELECT * FROM documents WHERE id = ?').get(d.id);
+}
+// Elternseite prüfen (inkl. Token-Freigabe); liefert { parent, folder }
+function parentFor(ctx, id, parent) {
+  if (parent === null || parent === '') return { parent: null, folder: null };
+  loadDoc(ctx, parent);
+  try { return checkDocParent(id, parent); } catch (e) { throw new ToolError(e.message); }
 }
 const logWrite = (ctx, req, action, target, details) => {
   req.user = ctx.user;
@@ -180,27 +212,25 @@ const logWrite = (ctx, req, action, target, details) => {
 // ---------- Anleitung für die KI ----------
 export function guide(ctx) {
   const s = ctx.settings;
-  const folders = folderList(ctx).map(f => {
-    const n = db.prepare('SELECT COUNT(*) AS n FROM documents WHERE folder_id = ? AND deleted_at IS NULL').get(f.id).n;
-    return `- \`${f.id}\` – ${f.name} (${n} Dokumente)`;
-  }).join('\n');
+  const folders = folderTree(ctx);
   const perms = [...ctx.scopes].map(x => ({ read: 'lesen & suchen', write: 'Dokumente anlegen & bearbeiten', delete: 'Dokumente in den Papierkorb verschieben', folders: 'Ordner anlegen' }[x])).join(', ');
   return `# Rackbook – Anleitung für KI-Assistenten
 
 Rackbook ist die Markdown-Dokumentation einer IT-/Homelab-Umgebung (Server, Netzwerk, Dienste, Backups, Runbooks).
 Du arbeitest im Namen von **${ctx.user.displayName}** (Rolle: ${ctx.user.role}). Deine Rechte: ${perms}.
-${ctx.folders.length ? `Du hast nur Zugriff auf diese Ordner: ${ctx.folders.join(', ')}.\n` : ''}
-## Ordner (\`folder\`-ID verwenden)
+${ctx.folders.length ? `Du hast nur Zugriff auf diese Ordner (inkl. Unterordner): ${ctx.rootFolders.join(', ')}.\n` : ''}
+## Ordner (\`folder\`-ID verwenden, eingerückt = Unterordner)
 ${folders || '- (keine Ordner freigegeben)'}
 
 ## Arbeitsweise
 1. **Erst suchen, dann schreiben.** Prüfe mit \`search_documents\`, ob es schon ein Dokument zum Thema gibt. Bestehende Dokumente ergänzen statt Duplikate anlegen.
 2. **Vor dem Ändern lesen.** \`get_document\` liefert Inhalt und \`version\`. Für kleine Änderungen \`replace_in_document\` oder \`append_to_document\` nutzen, für Umbauten \`update_document\` mit der gelesenen \`version\`.
 3. **Ein Dokument pro Thema** (ein Host, ein Dienst, ein Ablauf). Titel kurz und eindeutig, z. B. „Traefik Reverse Proxy“, „pve-01“, „Wiederherstellung nach Stromausfall“.
-4. **Passenden Ordner wählen** (siehe Liste). Gibt es keinen passenden, frage den Benutzer${ctx.scopes.has('folders') ? ' oder lege mit `create_folder` einen an' : ''}.
-5. **Tags**: 2–5 kurze, kleingeschriebene Schlagwörter (z. B. \`docker\`, \`proxmox\`, \`dns\`) – vorhandene Tags wiederverwenden (\`rackbook_overview\`).${s.aiTag ? ` Das Tag \`${s.aiTag}\` wird bei deinen Änderungen automatisch ergänzt.` : ''}
-6. **Keine Geheimnisse speichern**: keine Passwörter, API-Keys, Tokens oder privaten Schlüssel. Stattdessen auf den Ablageort verweisen (z. B. „Passwort in Vaultwarden unter *Dienst / Admin*“).
-7. Jede Änderung wird versioniert und ist für Menschen nachvollziehbar. Erfinde keine Fakten – nur dokumentieren, was der Benutzer gesagt hat oder was du verifiziert hast. Unklares als offene Aufgabe (\`- [ ]\`) festhalten.
+4. **Passenden Ordner wählen** (siehe Liste). Gibt es keinen passenden, frage den Benutzer${ctx.scopes.has('folders') ? ' oder lege mit `create_folder` einen an (mit `parent` als Unterordner)' : ''}.
+5. **Zusammengehöriges bündeln – pro Projekt/System eine Struktur:** ein **Hauptdokument** (Übersicht, Zugriff, Links) und die Detailthemen als **Unterseiten** davon (\`parent\` = ID des Hauptdokuments, z. B. „SSO“, „Backup“, „Update-Runbook“). Unterseiten liegen automatisch im Ordner ihrer Elternseite. Größere Projekte bekommen einen eigenen (Unter-)Ordner. Nicht dasselbe Projekt über mehrere Ordner verstreuen.
+6. **Tags**: 2–5 kurze, kleingeschriebene Schlagwörter (z. B. \`docker\`, \`proxmox\`, \`dns\`) – vorhandene Tags wiederverwenden (\`rackbook_overview\`).${s.aiTag ? ` Das Tag \`${s.aiTag}\` wird bei deinen Änderungen automatisch ergänzt.` : ''}
+7. **Keine Geheimnisse speichern**: keine Passwörter, API-Keys, Tokens oder privaten Schlüssel. Stattdessen auf den Ablageort verweisen (z. B. „Passwort in Vaultwarden unter *Dienst / Admin*“).
+8. Jede Änderung wird versioniert und ist für Menschen nachvollziehbar. Erfinde keine Fakten – nur dokumentieren, was der Benutzer gesagt hat oder was du verifiziert hast. Unklares als offene Aufgabe (\`- [ ]\`) festhalten.
 
 ## Unterstütztes Markdown
 - Überschriften \`##\` bis \`####\` (kein \`#\` im Inhalt – der Titel ist separat). \`##\`/\`###\` bilden das Inhaltsverzeichnis.
@@ -209,13 +239,14 @@ ${folders || '- (keine Ordner freigegeben)'}
 - Listen (\`-\`, \`1.\`), Tabellen (\`| a | b |\` mit Trennzeile \`|---|---|\`)
 - Hinweis-Box: Zeile mit \`>\` beginnen
 - Aufgaben: \`- [ ] offen\` / \`- [x] erledigt\` – offene Aufgaben erscheinen auf dem Dashboard
-- Links: \`[Text](https://…)\`, Verweis auf andere Dokumente: \`[Titel](/doc/<id>)\`
+- Links: \`[Text](https://…)\`, Verweis auf andere Dokumente: \`[Titel](/doc/<id>)\` – Unterseiten werden unter der Elternseite automatisch aufgelistet
 - Keine Bilder, kein HTML.
 
 ## Empfohlene Struktur
 **Dienst/Anwendung:** Kurzbeschreibung (1–2 Sätze) → \`## Zugriff\` (URL, Host, Port) → \`## Installation\` / \`## Konfiguration\` (Code-Blöcke) → \`## Abhängigkeiten\` → \`## Wartung & Updates\` → \`## Offene Punkte\` (Aufgaben).
 **Host/Hardware:** Kurzbeschreibung → Tabelle mit Hardware, OS, IP, Standort → \`## Dienste\` → \`## Netzwerk\` → \`## Wartung\`.
 **Runbook:** Anlass/Ziel → nummerierte Schritte mit Befehlen → \`## Prüfung\` → \`## Rückfallebene\`.
+**Projekt:** Hauptdokument (Zweck, Zugriff, Architektur-Überblick, Abhängigkeiten, offene Punkte) + Unterseiten je Teilthema (Konfiguration, Integrationen, Backup, Runbooks, Entwicklung).
 ${s.guidelines ? `\n## Hausregeln dieser Installation\n${s.guidelines}\n` : ''}`;
 }
 
@@ -231,7 +262,7 @@ const TOOLS = [
       const docs = accessibleDocs(ctx);
       const tags = {};
       docs.forEach(d => JSON.parse(d.tags).forEach(t => { tags[t] = (tags[t] || 0) + 1; }));
-      const recent = docs.slice(0, 10).map(d => `- ${d.title} (\`${d.id}\`, ${folderName(d.folder_id)}, ${iso(d.updated_at).slice(0, 10)})`).join('\n');
+      const recent = docs.slice(0, 10).map(d => `- ${d.title} (\`${d.id}\`, ${folderPath(d.folder_id)}${d.parent_id ? `, Unterseite von „${docTitle(d.parent_id)}“` : ''}, ${iso(d.updated_at).slice(0, 10)})`).join('\n');
       const tagList = Object.entries(tags).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} (${n})`).join(', ');
       return { text: `${guide(ctx)}\n## Vorhandene Tags\n${tagList || '(noch keine)'}\n\n## Zuletzt geändert\n${recent || '(noch keine Dokumente)'}` };
     },
@@ -246,7 +277,7 @@ const TOOLS = [
       if (!q) throw new ToolError('Bitte einen Suchbegriff angeben.');
       const hits = [];
       for (const d of accessibleDocs(ctx)) {
-        if (a.folder && d.folder_id !== a.folder) continue;
+        if (a.folder && !folderDescendants(a.folder).has(d.folder_id)) continue;
         const tags = JSON.parse(d.tags);
         if (a.tag && !tags.includes(String(a.tag).toLowerCase())) continue;
         const inTitle = d.title.toLowerCase().includes(q), inTag = tags.some(t => t.includes(q));
@@ -258,22 +289,23 @@ const TOOLS = [
       hits.sort((x, y) => y.score - x.score || y.d.updated_at - x.d.updated_at);
       const top = hits.slice(0, Math.min(50, Number(a.limit) || 10));
       return {
-        text: top.length ? top.map(h => `- **${h.d.title}** (\`${h.d.id}\`, ${folderName(h.d.folder_id)}) – …${h.snippet}…`).join('\n') : `Keine Treffer für „${a.query}“.`,
+        text: top.length ? top.map(h => `- **${h.d.title}** (\`${h.d.id}\`, ${folderPath(h.d.folder_id)}${h.d.parent_id ? ` › ${docTitle(h.d.parent_id)}` : ''}) – …${h.snippet}…`).join('\n') : `Keine Treffer für „${a.query}“.`,
         structured: { results: top.map(h => ({ ...meta(h.d), snippet: h.snippet })) },
       };
     },
   },
   {
     name: 'list_documents', scope: 'read', title: 'Dokumente auflisten',
-    description: 'Listet Dokumente (neueste zuerst), optional gefiltert nach Ordner oder Tag.',
-    inputSchema: { type: 'object', properties: { folder: str('Optional: Ordner-ID'), tag: str('Optional: Tag'), limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 }, offset: { type: 'integer', minimum: 0, default: 0 } } },
+    description: 'Listet Dokumente (neueste zuerst), optional gefiltert nach Ordner (inkl. Unterordner), Elternseite oder Tag.',
+    inputSchema: { type: 'object', properties: { folder: str('Optional: Ordner-ID (inkl. Unterordner)'), parent: str('Optional: nur Unterseiten dieses Dokuments'), tag: str('Optional: Tag'), limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 }, offset: { type: 'integer', minimum: 0, default: 0 } } },
     annotations: { readOnlyHint: true },
     run(ctx, a) {
-      const all = accessibleDocs(ctx).filter(d => (!a.folder || d.folder_id === a.folder) && (!a.tag || JSON.parse(d.tags).includes(String(a.tag).toLowerCase())));
+      const inFolder = a.folder ? folderDescendants(a.folder) : null;
+      const all = accessibleDocs(ctx).filter(d => (!inFolder || inFolder.has(d.folder_id)) && (!a.parent || d.parent_id === a.parent) && (!a.tag || JSON.parse(d.tags).includes(String(a.tag).toLowerCase())));
       const off = Math.max(0, Number(a.offset) || 0), lim = Math.min(200, Number(a.limit) || 50);
       const page = all.slice(off, off + lim);
       return {
-        text: `${all.length} Dokumente${all.length > page.length ? ` (zeige ${off + 1}–${off + page.length})` : ''}:\n` + page.map(d => `- ${d.title} (\`${d.id}\`, ${folderName(d.folder_id)}, Tags: ${JSON.parse(d.tags).join(', ') || '–'})`).join('\n'),
+        text: `${all.length} Dokumente${all.length > page.length ? ` (zeige ${off + 1}–${off + page.length})` : ''}:\n` + page.map(d => `- ${d.title} (\`${d.id}\`, ${folderPath(d.folder_id)}${d.parent_id ? ` › Unterseite von „${docTitle(d.parent_id)}“` : ''}, Tags: ${JSON.parse(d.tags).join(', ') || '–'})`).join('\n'),
         structured: { total: all.length, documents: page.map(meta) },
       };
     },
@@ -286,7 +318,13 @@ const TOOLS = [
     run(ctx, a) {
       const d = loadDoc(ctx, a.id);
       const m = meta(d);
-      return { text: `# ${d.title}\nID: ${d.id} · Ordner: ${m.folderName} (\`${d.folder_id}\`) · Tags: ${m.tags.join(', ') || '–'} · Version: ${d.version} · Geändert: ${m.updatedAt}${m.updatedBy ? ' von ' + m.updatedBy : ''}\n\n${d.content}`, structured: { ...m, content: d.content } };
+      const kids = children(d.id);
+      const crumbs = docAncestors(d.id).reverse().map(id => `${docTitle(id)} (\`${id}\`)`).join(' › ');
+      return {
+        text: `# ${d.title}\nID: ${d.id} · Ordner: ${m.folderPath} (\`${d.folder_id}\`)${crumbs ? ` · Elternseiten: ${crumbs}` : ''} · Tags: ${m.tags.join(', ') || '–'} · Version: ${d.version} · Geändert: ${m.updatedAt}${m.updatedBy ? ' von ' + m.updatedBy : ''}`
+          + `${kids.length ? `\nUnterseiten: ${kids.map(k => `${k.title} (\`${k.id}\`)`).join(', ')}` : ''}\n\n${d.content}`,
+        structured: { ...m, content: d.content, children: kids },
+      };
     },
   },
   {
@@ -302,27 +340,32 @@ const TOOLS = [
   },
   {
     name: 'create_document', scope: 'write', title: 'Dokument anlegen',
-    description: 'Legt ein neues Dokument an. Vorher mit search_documents prüfen, ob es das Thema schon gibt. Der Titel wird separat übergeben – den Inhalt nicht mit einer #-Überschrift beginnen.',
+    description: 'Legt ein neues Dokument an – optional als Unterseite eines bestehenden Dokuments (`parent`). Vorher mit search_documents prüfen, ob es das Thema schon gibt. Der Titel wird separat übergeben – den Inhalt nicht mit einer #-Überschrift beginnen.',
     inputSchema: { type: 'object', properties: {
-      title: str('Kurzer, eindeutiger Titel'), folder: str('Ordner-ID (siehe rackbook_overview)'),
+      title: str('Kurzer, eindeutiger Titel'), folder: str('Ordner-ID (siehe rackbook_overview); bei `parent` nicht nötig'),
+      parent: str('Optional: ID des Hauptdokuments, unter dem diese Seite als Unterseite erscheint'),
       tags: { type: 'array', items: { type: 'string' }, description: '2–5 kleingeschriebene Tags' }, content: str('Inhalt in Markdown'),
-    }, required: ['title', 'folder', 'content'] },
+    }, required: ['title', 'content'] },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     run(ctx, a, req) {
-      checkFolder(ctx, a.folder);
+      const p = a.parent ? parentFor(ctx, null, a.parent) : { parent: null, folder: null };
+      const folder = p.folder || a.folder;
+      if (!folder) throw new ToolError('Bitte `folder` oder `parent` angeben.');
+      checkFolder(ctx, folder);
       const dup = db.prepare('SELECT id, folder_id FROM documents WHERE lower(title) = lower(?) AND deleted_at IS NULL').all(normTitle(a.title)).find(x => folderOk(ctx, x.folder_id));
       if (dup) throw new ToolError(`Es gibt bereits ein Dokument mit diesem Titel (\`${dup.id}\`). Bitte dieses ergänzen (get_document / append_to_document) oder einen anderen Titel wählen.`);
-      const id = insertDoc({ title: a.title, folder: a.folder, tags: withAiTag(ctx, a.tags || []), content: String(a.content || '').replace(/^#\s+.*\n+/, '') }, ctx.user.id, 'mcp');
+      const id = insertDoc({ title: a.title, folder, parent: p.parent, tags: withAiTag(ctx, a.tags || []), content: String(a.content || '').replace(/^#\s+.*\n+/, '') }, ctx.user.id, 'mcp');
       const d = db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
       logWrite(ctx, req, 'doc.created', id, { title: d.title });
-      return { text: `Dokument „${d.title}“ angelegt (ID \`${id}\`, Version 1). Link: /doc/${id}`, structured: meta(d) };
+      return { text: `Dokument „${d.title}“ angelegt (ID \`${id}\`, Version 1${p.parent ? `, Unterseite von „${docTitle(p.parent)}“` : ''}, Ordner ${folderPath(folder)}). Link: /doc/${id}`, structured: meta(d) };
     },
   },
   {
     name: 'update_document', scope: 'write', title: 'Dokument überarbeiten',
-    description: 'Ersetzt Titel, Ordner, Tags und/oder den gesamten Inhalt. `version` aus get_document ist Pflicht – hat ein Mensch das Dokument inzwischen geändert, schlägt die Änderung fehl und du musst neu lesen. Für kleine Änderungen besser replace_in_document oder append_to_document nutzen.',
+    description: 'Ersetzt Titel, Ordner, Elternseite (`parent`, leerer String = oberste Ebene), Tags und/oder den gesamten Inhalt. Unterseiten wandern beim Ordnerwechsel mit. `version` aus get_document ist Pflicht – hat ein Mensch das Dokument inzwischen geändert, schlägt die Änderung fehl und du musst neu lesen. Für kleine Änderungen besser replace_in_document oder append_to_document nutzen.',
     inputSchema: { type: 'object', properties: {
       id: str('Dokument-ID'), version: { type: 'integer', description: 'Version aus get_document' }, title: str('Neuer Titel'), folder: str('Neue Ordner-ID'),
+      parent: str('Neue Elternseite (Dokument-ID) oder leerer String für oberste Ebene'),
       tags: { type: 'array', items: { type: 'string' } }, content: str('Neuer vollständiger Markdown-Inhalt'),
     }, required: ['id', 'version'] },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
@@ -331,9 +374,16 @@ const TOOLS = [
         const d = loadDoc(ctx, a.id);
         if (Number(a.version) !== d.version) throw new ToolError(`Versionskonflikt: aktuell ist Version ${d.version}, übergeben wurde ${a.version}. Bitte get_document erneut aufrufen und die Änderung auf den aktuellen Stand anwenden.`);
         if (a.folder !== undefined) checkFolder(ctx, a.folder);
+        let folder = a.folder, parent;
+        if (a.parent !== undefined) {
+          const p = parentFor(ctx, d.id, a.parent);
+          parent = p.parent;
+          if (p.folder) folder = p.folder;
+        } else if (folder !== undefined && folder !== d.folder_id && d.parent_id) parent = null; // Ordnerwechsel löst von der Elternseite
         const next = {
           title: a.title !== undefined ? normTitle(a.title) : undefined,
-          folder: a.folder,
+          folder,
+          parent,
           tags: JSON.stringify(withAiTag(ctx, a.tags !== undefined ? a.tags : JSON.parse(d.tags))),
           content: a.content !== undefined ? normContent(String(a.content).replace(/^#\s+.*\n+/, '')) : undefined,
         };
@@ -401,21 +451,25 @@ const TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     run(ctx, a, req) {
       const d = loadDoc(ctx, a.id);
-      db.prepare('UPDATE documents SET deleted_at = ?, deleted_by = ? WHERE id = ?').run(Date.now(), ctx.user.id, d.id);
-      logWrite(ctx, req, 'doc.deleted', d.id, { title: d.title });
-      return { text: `„${d.title}“ wurde in den Papierkorb verschoben.` };
+      const ids = [d.id, ...docDescendants(d.id)];
+      const now = Date.now();
+      tx(() => ids.forEach(id => db.prepare('UPDATE documents SET deleted_at = ?, deleted_by = ? WHERE id = ?').run(now, ctx.user.id, id)));
+      logWrite(ctx, req, 'doc.deleted', d.id, { title: d.title, subpages: ids.length - 1 });
+      return { text: `„${d.title}“${ids.length > 1 ? ` und ${ids.length - 1} Unterseite(n)` : ''} wurde(n) in den Papierkorb verschoben.` };
     },
   },
   {
     name: 'create_folder', scope: 'folders', title: 'Ordner anlegen',
     description: 'Legt einen neuen Ordner an. Nur wenn kein vorhandener Ordner passt. icon ist ein Material-Symbols-Name (z. B. dns, lan, router, storage, security, cloud, terminal).',
-    inputSchema: { type: 'object', properties: { name: str('Ordnername'), icon: str('Material-Symbols-Name', { default: 'folder' }), hue: { type: 'integer', minimum: 0, maximum: 360, description: 'Farbton 0–360' } }, required: ['name'] },
+    inputSchema: { type: 'object', properties: { name: str('Ordnername'), parent: str('Optional: ID des übergeordneten Ordners (für Unterordner)'), icon: str('Material-Symbols-Name', { default: 'folder' }), hue: { type: 'integer', minimum: 0, maximum: 360, description: 'Farbton 0–360' } }, required: ['name'] },
     annotations: { readOnlyHint: false, destructiveHint: false },
     run(ctx, a, req) {
-      if (ctx.folders.length) throw new ToolError('Dieses Token ist auf bestimmte Ordner beschränkt und darf keine neuen Ordner anlegen.');
+      if (ctx.folders.length && !(a.parent && folderOk(ctx, a.parent))) throw new ToolError('Dieses Token ist auf bestimmte Ordner beschränkt und darf nur Unterordner darin anlegen.');
+      let parent = null;
+      if (a.parent) { if (!folderExists(a.parent)) throw new ToolError(`Ordner „${a.parent}“ existiert nicht.`); try { parent = checkFolderParent(null, a.parent); } catch (e) { throw new ToolError(e.message); } }
       const name = ctrlStrip(a.name).replace(/\s+/g, ' ').trim().slice(0, 60);
       if (!name) throw new ToolError('Bitte einen Namen angeben.');
-      const exists = db.prepare('SELECT id FROM folders WHERE lower(name) = lower(?)').get(name);
+      const exists = db.prepare('SELECT id FROM folders WHERE lower(name) = lower(?) AND parent_id IS ?').get(name, parent);
       if (exists) throw new ToolError(`Ordner existiert bereits: \`${exists.id}\`.`);
       const icon = /^[a-z0-9_]{1,40}$/.test(a.icon || '') ? a.icon : 'folder';
       const hue = Math.min(360, Math.max(0, Math.round(Number(a.hue ?? 200)) || 0));
@@ -423,9 +477,9 @@ const TOOLS = [
       let id = base, i = 2;
       while (folderExists(id)) id = `${base}-${i++}`;
       const sort = (db.prepare('SELECT MAX(sort) AS m FROM folders').get().m ?? 0) + 1;
-      db.prepare('INSERT INTO folders (id, name, icon, hue, sort, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, name, icon, hue, sort, Date.now());
-      logWrite(ctx, req, 'folder.created', id, { name });
-      return { text: `Ordner „${name}“ angelegt (ID \`${id}\`).` };
+      db.prepare('INSERT INTO folders (id, name, icon, hue, sort, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, name, icon, hue, sort, parent, Date.now());
+      logWrite(ctx, req, 'folder.created', id, { name, parent });
+      return { text: `Ordner „${folderPath(id)}“ angelegt (ID \`${id}\`).` };
     },
   },
 ];

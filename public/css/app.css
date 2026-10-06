@@ -404,3 +404,12 @@ select.input { cursor: pointer; }
 
 .tag-chip.sel-chip { background: var(--acc-soft); color: var(--ink); box-shadow: 0 0 0 1px var(--acc-strong); }
 .set-row:disabled { color: inherit; }
+
+/* ---------- Ordnerbaum & Unterseiten ---------- */
+.tree-chev { font-size: 17px !important; color: var(--faint) !important; margin-left: -4px; border-radius: 4px; }
+.tree-chev:hover { color: var(--ink) !important; background: #e4e6eb; }
+.tree-chev-space { width: 13px; flex-shrink: 0; }
+.doc-main { flex: 1 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.doc-main .article { flex: none; }
+.field-chip select:disabled { opacity: .6; cursor: not-allowed; }
+.folder-row-parent { width: 150px; flex-shrink: 0; }

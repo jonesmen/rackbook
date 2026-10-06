@@ -135,6 +135,13 @@ const MIGRATIONS = [
   ALTER TABLE documents ADD COLUMN updated_via TEXT;
   ALTER TABLE revisions ADD COLUMN via TEXT;
   `,
+  // 4: Unterordner und Unterseiten
+  `
+  ALTER TABLE folders ADD COLUMN parent_id TEXT REFERENCES folders(id) ON DELETE SET NULL;
+  ALTER TABLE documents ADD COLUMN parent_id TEXT REFERENCES documents(id) ON DELETE SET NULL;
+  CREATE INDEX folders_parent ON folders(parent_id);
+  CREATE INDEX documents_parent ON documents(parent_id);
+  `,
 ];
 
 export function migrate() {
