@@ -434,6 +434,7 @@ function SsoSettings({ app }) {
         <${Row} k="enabled" title="Single Sign-On aktivieren" desc="Zeigt den SSO-Button auf der Anmeldeseite" />
         <${Row} k="autoCreate" title="Benutzer automatisch anlegen" desc="Neue SSO-Benutzer erhalten beim ersten Login ein Konto" />
         <${Row} k="syncRoles" title="Rollen bei jeder Anmeldung synchronisieren" desc="Rolle wird anhand der Gruppen neu gesetzt (nur wenn Admin-/Bearbeiter-Gruppen gesetzt sind)" />
+        <${Row} k="syncDisplayName" title="Anzeigename bei jeder Anmeldung übernehmen" desc="Aus: Der Name aus dem Identity Provider wird nur beim ersten Login übernommen, danach gilt der in Rackbook gesetzte Name" />
         <${Row} k="linkExisting" title="Bestehende Konten über den Benutzernamen verknüpfen" desc="Nur aktivieren, wenn Benutzernamen im Identity Provider nicht frei wählbar sind" />
         <${Row} k="disablePasswordLogin" title="Passwort-Anmeldung deaktivieren" desc="Nur noch SSO – Administratoren behalten einen Notfallzugang mit Passwort" />
         <${Row} k="autoRedirect" title="Automatisch zum Identity Provider weiterleiten" desc="Überspringt die Anmeldeseite (Notfallzugang: /?local)" />

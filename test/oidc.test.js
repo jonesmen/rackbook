@@ -88,9 +88,21 @@ test('Rollen werden bei erneuter Anmeldung synchronisiert, gleiches Konto wird w
   const s = await ssoLogin();
   assert.equal(s.user.username, 'alice');
   assert.equal(s.user.role, 'admin');
-  assert.equal(s.user.displayName, 'Alice Neu');
+  assert.equal(s.user.displayName, 'Alice', 'Anzeigename wird standardmäßig nicht überschrieben');
   const users = await api('GET', '/admin/users', admin);
   assert.equal(users.data.users.filter(u => u.username.startsWith('alice')).length, 1);
+});
+
+test('In Rackbook geänderter Anzeigename bleibt nach erneutem SSO-Login erhalten (außer Abgleich ist an)', async () => {
+  let s = await ssoLogin();
+  const me = { cookie: s.cookie, csrf: s.csrf };
+  assert.equal((await api('PATCH', '/me', { ...me, body: { displayName: 'Ali' } })).status, 200);
+  s = await ssoLogin();
+  assert.equal(s.user.displayName, 'Ali');
+  await api('PUT', '/admin/oidc', { ...admin, body: { syncDisplayName: true } });
+  s = await ssoLogin();
+  assert.equal(s.user.displayName, 'Alice Neu');
+  await api('PUT', '/admin/oidc', { ...admin, body: { syncDisplayName: false } });
 });
 
 test('Benutzer ohne erlaubte Gruppe wird abgewiesen', async () => {

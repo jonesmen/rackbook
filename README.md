@@ -94,7 +94,7 @@ Komplett in der Oberfläche konfigurierbar unter **Verwaltung → Single Sign-On
    - Optional Gruppen: *Erlaubte Gruppen*, *Administrator-Gruppen*, *Bearbeiter-Gruppen* (Namen der Authentik-Gruppen)
 4. **Speichern & Verbindung testen**, dann *Single Sign-On aktivieren*.
 
-Weitere Optionen: Benutzer automatisch anlegen, Rollen bei jeder Anmeldung aus Gruppen synchronisieren, bestehende Konten über den Benutzernamen verknüpfen, Passwort-Anmeldung deaktivieren (Administratoren behalten einen Notfallzugang), automatische Weiterleitung zum Provider (Notfallzugang über `/?local`) und Abmelden beim Provider.
+Weitere Optionen: Benutzer automatisch anlegen, Rollen bei jeder Anmeldung aus Gruppen synchronisieren, Anzeigename bei jeder Anmeldung übernehmen (standardmäßig aus – der Name wird nur beim ersten Login übernommen und kann danach in Rackbook geändert werden), bestehende Konten über den Benutzernamen verknüpfen, Passwort-Anmeldung deaktivieren (Administratoren behalten einen Notfallzugang), automatische Weiterleitung zum Provider (Notfallzugang über `/?local`) und Abmelden beim Provider.
 
 Sicherheit: Authorization Code Flow mit PKCE (S256), `state` und `nonce`, Signaturprüfung des ID-Tokens über die JWKS des Providers (`openid-client`). Das Client-Secret wird verschlüsselt gespeichert und nie wieder an den Browser ausgeliefert. Zwei-Faktor-Schutz für SSO-Benutzer übernimmt Authentik.
 

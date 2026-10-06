@@ -22,6 +22,7 @@ export const OIDC_DEFAULTS = {
   editorGroups: [],
   defaultRole: 'viewer',
   syncRoles: true,
+  syncDisplayName: false, // Anzeigename bei jeder Anmeldung aus dem IdP übernehmen
   disablePasswordLogin: false,
   autoRedirect: false,
   logoutAtProvider: false,
@@ -45,7 +46,7 @@ export function saveOidcSettings(body) {
   const cur = getOidcSettings();
   const next = { ...cur };
   const b = body || {};
-  const bools = ['enabled', 'autoCreate', 'linkExisting', 'syncRoles', 'disablePasswordLogin', 'autoRedirect', 'logoutAtProvider', 'allowInsecure'];
+  const bools = ['enabled', 'autoCreate', 'linkExisting', 'syncRoles', 'syncDisplayName', 'disablePasswordLogin', 'autoRedirect', 'logoutAtProvider', 'allowInsecure'];
   for (const k of bools) if (b[k] !== undefined) next[k] = !!b[k];
   if (b.issuer !== undefined) {
     next.issuer = String(b.issuer).trim();
@@ -231,7 +232,9 @@ export function resolveUser({ claims, issuer }) {
       if (user.role === 'admin' && newRole !== 'admin' && activeAdmins() <= 1) newRole = 'admin';
     }
     db.prepare('UPDATE users SET role = ?, display_name = ?, updated_at = ? WHERE id = ?')
-      .run(newRole, created ? user.display_name : displayName || user.display_name, now, user.id);
+      // Der Anzeigename kommt nur beim Anlegen aus dem IdP; danach gilt der in Rackbook gesetzte Name
+      // (außer der Abgleich ist ausdrücklich eingeschaltet).
+      .run(newRole, !created && s.syncDisplayName && displayName ? displayName : user.display_name, now, user.id);
     db.prepare('UPDATE user_identities SET last_login_at = ?, email = ? WHERE issuer = ? AND subject = ?').run(now, email, issuer, sub);
     return { user: db.prepare('SELECT * FROM users WHERE id = ?').get(user.id), created, roleChanged: newRole !== user.role };
   });
