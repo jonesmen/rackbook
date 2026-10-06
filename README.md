@@ -44,15 +44,17 @@ docker compose up -d
 
 Danach `http://<server>:3000` öffnen und das Administratorkonto anlegen.
 
-Ist das Image noch nicht in der Registry verfügbar (oder privat), baut Compose es automatisch lokal. Explizit lokal bauen:
+Für den Betrieb werden nur `docker-compose.yml` und `.env` benötigt (z. B. in `/opt/stacks/rackbook` für Dockge/Portainer). Das Image kommt aus `ghcr.io/jonesmen/rackbook`.
+
+Lokal aus dem Quellcode bauen (im geklonten Repo):
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 ### Nur mit `docker-compose.yml` und `.env`
 
-Ab einem Release (`v*`-Tag) hängen `docker-compose.yml` und `rackbook.env` (auf die Version festgelegt) am GitHub-Release. Beide in einen Ordner legen, `rackbook.env` in `.env` umbenennen, den Abschnitt `build:` aus der Compose-Datei entfernen und `docker compose up -d` ausführen. Ist das GHCR-Paket privat, vorher `docker login ghcr.io` ausführen oder das Paket auf GitHub öffentlich stellen.
+Ab einem Release (`v*`-Tag) hängen `docker-compose.yml` und `rackbook.env` (auf die Version festgelegt) am GitHub-Release. Beide in einen Ordner legen, `rackbook.env` in `.env` umbenennen und `docker compose up -d` ausführen. Ist das GHCR-Paket privat, vorher `docker login ghcr.io` ausführen oder das Paket auf GitHub öffentlich stellen.
 
 ## Konfiguration
 
@@ -131,7 +133,7 @@ Zusätzlich können Administratoren unter **Einstellungen → Daten** ein JSON-B
 ```bash
 docker compose pull && docker compose up -d
 # bzw. bei lokalem Build:
-git pull && docker compose up -d --build
+git pull && docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 Datenbankmigrationen laufen beim Start automatisch.

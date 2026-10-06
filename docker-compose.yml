@@ -1,7 +1,9 @@
 # Rackbook – Docker-Compose-Stack
+# Benötigt nur diese Datei und die .env im selben Ordner.
 # Start:   docker compose up -d
 # Update:  docker compose pull && docker compose up -d
 # Logs:    docker compose logs -f rackbook
+# Selbst bauen (im geklonten Repo): docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 # Alle Einstellungen werden in der Datei .env vorgenommen.
 
 name: rackbook
@@ -9,9 +11,7 @@ name: rackbook
 services:
   rackbook:
     image: ghcr.io/jonesmen/rackbook:${RACKBOOK_VERSION:-latest}
-    # Alternativ lokal bauen: docker compose up -d --build
-    build:
-      context: .
+    pull_policy: always
     container_name: rackbook
     restart: unless-stopped
     init: true
