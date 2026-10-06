@@ -1,12 +1,29 @@
-import { html, useState } from '/vendor/preact-htm.js';
+import { html, useState, useEffect } from '/vendor/preact-htm.js';
 import { api, setCsrf } from './api.js';
 import { Icon } from './util.js';
 
 const Brand = () => html`<div class="brand"><div class="logo">R</div><span class="brand-name">Rackbook</span></div>`;
 const ErrorBox = ({ msg }) => msg ? html`<div class="notice err" role="alert"><${Icon} name="error" />${msg}</div>` : null;
 
+const SSO_URL = '/api/auth/oidc/login';
+
+// Fehlermeldung aus dem SSO-Rücksprung einmalig aus der URL lesen und entfernen.
+function takeSsoError() {
+  const qs = new URLSearchParams(location.search);
+  const e = qs.get('sso_error');
+  if (e !== null) { qs.delete('sso_error'); history.replaceState(null, '', location.pathname + (qs.toString() ? '?' + qs : '')); }
+  return e;
+}
+
 export function AuthScreen({ state, onAuthed }) {
   const [mode, setMode] = useState(state.setupRequired ? 'setup' : 'login');
+  const sso = state.sso || { enabled: false };
+  const [ssoErr] = useState(() => takeSsoError());
+  const forceLocal = new URLSearchParams(location.search).has('local');
+  const [showLocal, setShowLocal] = useState(!sso.enabled || !sso.passwordLoginDisabled || forceLocal);
+  useEffect(() => {
+    if (mode === 'login' && sso.enabled && sso.autoRedirect && !ssoErr && !forceLocal) location.assign(SSO_URL);
+  }, []);
   const [f, setF] = useState({ username: '', displayName: '', password: '', password2: '', code: '' });
   const [ticket, setTicket] = useState(null);
   const [err, setErr] = useState('');
@@ -49,8 +66,12 @@ export function AuthScreen({ state, onAuthed }) {
           ${mode === 'mfa' && html`<p style=${{ marginTop: '6px' }}>Gib den 6-stelligen Code aus deiner Authenticator-App ein.</p>`}
         </div>
         ${info && html`<div class="notice"><${Icon} name="info" />${info}</div>`}
-        <${ErrorBox} msg=${err} />
-        ${mode === 'mfa' ? html`
+        <${ErrorBox} msg=${err || ssoErr} />
+        ${mode === 'login' && sso.enabled && html`
+          <a class="btn btn-primary sso-btn" href=${SSO_URL}><${Icon} name="key" />${sso.buttonLabel}</a>
+          ${showLocal ? html`<div class="divider"><span>oder mit Benutzername</span></div>`
+            : html`<div class="auth-foot"><button type="button" onClick=${() => setShowLocal(true)}>Notfallzugang für Administratoren</button></div>`}`}
+        ${mode === 'login' && !showLocal ? null : mode === 'mfa' ? html`
           <label class="field"><span>Code</span>
             <input class="input mono" value=${f.code} onInput=${set('code')} inputmode="numeric" autocomplete="one-time-code" maxlength="7" pattern="[0-9 ]*" required autofocus />
           </label>` : html`
@@ -70,9 +91,9 @@ export function AuthScreen({ state, onAuthed }) {
             </label>
             <div class="hint">Mindestens ${min} Zeichen. Nicht den Benutzernamen verwenden.</div>`}
         `}
-        <button class="btn btn-primary" type="submit" disabled=${busy}>
+        ${(mode !== 'login' || showLocal) && html`<button class=${'btn ' + (mode === 'login' && sso.enabled ? 'btn-ghost' : 'btn-primary')} type="submit" disabled=${busy}>
           ${busy ? 'Bitte warten …' : mode === 'login' ? 'Anmelden' : mode === 'mfa' ? 'Bestätigen' : mode === 'setup' ? 'Administrator anlegen' : 'Registrieren'}
-        </button>
+        </button>`}
         ${mode === 'login' && state.registrationEnabled && html`<div class="auth-foot">Noch kein Konto? <button type="button" onClick=${() => { setErr(''); setInfo(''); setMode('register'); }}>Registrieren</button></div>`}
         ${mode === 'register' && html`<div class="auth-foot">Bereits registriert? <button type="button" onClick=${() => { setErr(''); setMode('login'); }}>Anmelden</button></div>`}
         ${mode === 'mfa' && html`<div class="auth-foot"><button type="button" onClick=${() => { setErr(''); setTicket(null); setMode('login'); }}>Zurück zur Anmeldung</button></div>`}

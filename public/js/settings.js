@@ -162,8 +162,8 @@ function SecurityPanel({ app }) {
   return html`
     <div class="panel">
       <${PanelHead} title="Sicherheit" desc="Passwort, Zwei-Faktor-Authentifizierung und angemeldete Geräte." />
-      <${PasswordForm} app=${app} />
-      <${TotpPanel} app=${app} />
+      ${app.state.user.sso && html`<div class="notice"><${Icon} name="key" />Dein Konto ist mit Single Sign-On verknüpft. Passwort und Zwei-Faktor-Schutz verwaltest du beim Identity Provider.</div>`}
+      ${app.state.user.hasPassword && html`<${PasswordForm} app=${app} /><${TotpPanel} app=${app} />`}
       <${SessionsPanel} app=${app} />
       <div style=${{ borderTop: '1px solid var(--line2)', paddingTop: '14px' }}>
         <button type="button" class="btn btn-ghost md" onClick=${() => app.logout()}><${Icon} name="logout" />Abmelden</button>
@@ -284,7 +284,7 @@ function UserRow({ app, u, reload }) {
       <td><select class="input" style=${{ width: '140px', padding: '6px 8px' }} value=${u.role} onChange=${e => patch({ role: e.target.value })}>
         ${Object.entries(ROLE_LABEL).map(([v, l]) => html`<option value=${v}>${l}</option>`)}
       </select></td>
-      <td><span class=${'pill ' + statusPill[0]}>${statusPill[1]}</span> ${u.totpEnabled && html`<span class="pill ok" title="Zwei-Faktor aktiv">2FA</span>`}</td>
+      <td><span class=${'pill ' + statusPill[0]}>${statusPill[1]}</span> ${u.totpEnabled && html`<span class="pill ok" title="Zwei-Faktor aktiv">2FA</span>`} ${u.sso && html`<span class="pill editor" title="Mit Single Sign-On verknüpft">SSO</span>`}</td>
       <td class="xs muted">${u.lastLoginAt ? fmtDate(u.lastLoginAt) : 'nie'}<br />${u.sessions} Sitzung(en)</td>
       <td class="r"><div style=${{ display: 'flex', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
         ${u.status === 'pending' && html`<button type="button" class="btn btn-primary sm" onClick=${() => patch({ status: 'active' })}>Freischalten</button>`}
@@ -346,6 +346,100 @@ function SystemSettings({ app }) {
     </div>`;
 }
 
+// ---------------- Single Sign-On (OIDC) ----------------
+const csv = a => (Array.isArray(a) ? a.join(', ') : a || '');
+
+function SsoSettings({ app }) {
+  const [s, setS] = useState(null);
+  const [f, setF] = useState(null);
+  const [secret, setSecret] = useState('');
+  const [test, setTest] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fill = o => { setS(o); setF({ ...o, allowedGroups: csv(o.allowedGroups), adminGroups: csv(o.adminGroups), editorGroups: csv(o.editorGroups) }); };
+  useEffect(() => { api('/admin/oidc').then(r => fill(r.oidc)).catch(e => app.flash(e.message, null, true)); }, []);
+  if (!f) return null;
+  const set = k => e => setF({ ...f, [k]: e.target.value });
+  const tog = k => () => setF({ ...f, [k]: !f[k] });
+  const save = async e => {
+    if (e) e.preventDefault();
+    setErr(''); setBusy(true);
+    try {
+      const body = { ...f, clientSecret: secret || undefined };
+      delete body.redirectUri; delete body.hasClientSecret;
+      const r = await api('/admin/oidc', { method: 'PUT', body });
+      fill(r.oidc); setSecret(''); app.flash('SSO-Einstellungen gespeichert');
+    } catch (x) { setErr(x.message); } finally { setBusy(false); }
+  };
+  const runTest = async () => {
+    setErr(''); setTest(null); setBusy(true);
+    try { await save(); setTest((await api('/admin/oidc/test', { method: 'POST', body: {} })).result); }
+    catch (x) { setErr(x.message); } finally { setBusy(false); }
+  };
+  const copy = () => { navigator.clipboard && window.isSecureContext ? navigator.clipboard.writeText(s.redirectUri).then(() => app.flash('Redirect-URI kopiert')) : app.flash('Bitte manuell kopieren', null, true); };
+  const Row = ({ k, title, desc }) => html`<${SetToggle} title=${title} desc=${desc} on=${!!f[k]} onClick=${tog(k)} />`;
+  return html`
+    <form class="panel" onSubmit=${save}>
+      <div class="row-between">
+        <${PanelHead} title="Single Sign-On (OpenID Connect)" desc="Anmeldung über Authentik, Keycloak, Authelia oder einen anderen OIDC-Provider." />
+        <span class=${'pill ' + (s.enabled ? 'ok' : 'warn')}>${s.enabled ? 'Aktiv' : 'Inaktiv'}</span>
+      </div>
+      <div class="notice" style=${{ flexDirection: 'column', gap: '6px' }}>
+        <div style=${{ fontWeight: 600 }}>Einrichtung in Authentik</div>
+        <ol class="help-steps">
+          <li><b>Anwendungen → Provider → Erstellen → OAuth2/OpenID-Provider</b>, Client-Typ <code>Confidential</code>.</li>
+          <li>Als <b>Redirect-URI</b> (strict) die Adresse unten eintragen.</li>
+          <li>Unter <b>Anwendungen → Anwendungen</b> eine Anwendung mit diesem Provider anlegen (Slug z. B. <code>rackbook</code>).</li>
+          <li>Hier eintragen: Issuer <code>https://auth.example.de/application/o/rackbook/</code>, Client-ID und Client-Secret aus dem Provider.</li>
+          <li>Gruppen werden über den Scope <code>profile</code> im Claim <code>groups</code> mitgeliefert.</li>
+        </ol>
+      </div>
+      <label class="field wide"><span>Redirect-URI (in Authentik eintragen)</span>
+        <div class="copy-field"><input class="input" value=${s.redirectUri} readonly onFocus=${e => e.target.select()} /><button type="button" class="btn btn-ghost sm" onClick=${copy}><${Icon} name="content_copy" cls="s16" /></button></div>
+      </label>
+      ${s.redirectUri.startsWith('http:') && html`<div class="small muted">Tipp: Hinter einem HTTPS-Reverse-Proxy <span class="mono">PUBLIC_URL</span> und <span class="mono">TRUST_PROXY=1</span> in der .env setzen, damit hier https:// erscheint.</div>`}
+      <div class="form-grid">
+        <label class="field wide" style=${{ gridColumn: '1 / -1' }}><span>Issuer-URL</span><input class="input mono" value=${f.issuer} onInput=${set('issuer')} placeholder="https://auth.example.de/application/o/rackbook/" /></label>
+        <label class="field"><span>Client-ID</span><input class="input mono" value=${f.clientId} onInput=${set('clientId')} autocomplete="off" /></label>
+        <label class="field"><span>Client-Secret</span><input class="input mono" type="password" value=${secret} onInput=${e => setSecret(e.target.value)} autocomplete="new-password" placeholder=${s.hasClientSecret ? '•••••••• (gespeichert – leer lassen für unverändert)' : 'leer bei Public Client'} /></label>
+        <label class="field"><span>Scopes</span><input class="input mono" value=${f.scopes} onInput=${set('scopes')} /></label>
+        <label class="field"><span>Beschriftung des Anmelde-Buttons</span><input class="input" value=${f.buttonLabel} onInput=${set('buttonLabel')} maxlength="60" /></label>
+      </div>
+
+      <h3 class="h2 s16" style=${{ marginTop: '6px' }}>Benutzer & Rollen</h3>
+      <div class="form-grid">
+        <label class="field"><span>Erlaubte Gruppen (leer = alle)</span><input class="input" value=${f.allowedGroups} onInput=${set('allowedGroups')} placeholder="rackbook-users" /></label>
+        <label class="field"><span>Administrator-Gruppen</span><input class="input" value=${f.adminGroups} onInput=${set('adminGroups')} placeholder="rackbook-admins" /></label>
+        <label class="field"><span>Bearbeiter-Gruppen</span><input class="input" value=${f.editorGroups} onInput=${set('editorGroups')} placeholder="rackbook-editors" /></label>
+        <label class="field"><span>Rolle ohne passende Gruppe</span><select class="input" value=${f.defaultRole} onChange=${set('defaultRole')}><option value="viewer">Leser</option><option value="editor">Bearbeiter</option></select></label>
+        <label class="field"><span>Claim für Benutzername</span><input class="input mono" value=${f.usernameClaim} onInput=${set('usernameClaim')} /></label>
+        <label class="field"><span>Claim für Gruppen</span><input class="input mono" value=${f.groupsClaim} onInput=${set('groupsClaim')} /></label>
+      </div>
+      <div class="small muted">Mehrere Gruppen durch Komma trennen. Der letzte aktive Administrator wird durch die Gruppenzuordnung nie herabgestuft.</div>
+      <div>
+        <${Row} k="enabled" title="Single Sign-On aktivieren" desc="Zeigt den SSO-Button auf der Anmeldeseite" />
+        <${Row} k="autoCreate" title="Benutzer automatisch anlegen" desc="Neue SSO-Benutzer erhalten beim ersten Login ein Konto" />
+        <${Row} k="syncRoles" title="Rollen bei jeder Anmeldung synchronisieren" desc="Rolle wird anhand der Gruppen neu gesetzt (nur wenn Admin-/Bearbeiter-Gruppen gesetzt sind)" />
+        <${Row} k="linkExisting" title="Bestehende Konten über den Benutzernamen verknüpfen" desc="Nur aktivieren, wenn Benutzernamen im Identity Provider nicht frei wählbar sind" />
+        <${Row} k="disablePasswordLogin" title="Passwort-Anmeldung deaktivieren" desc="Nur noch SSO – Administratoren behalten einen Notfallzugang mit Passwort" />
+        <${Row} k="autoRedirect" title="Automatisch zum Identity Provider weiterleiten" desc="Überspringt die Anmeldeseite (Notfallzugang: /?local)" />
+        <${Row} k="logoutAtProvider" title="Beim Abmelden auch beim Identity Provider abmelden" desc="Leitet nach dem Abmelden zur Logout-Seite von Authentik weiter" />
+        <${Row} k="allowInsecure" title="Unverschlüsseltes HTTP erlauben" desc="Nur für Tests im lokalen Netz – produktiv immer HTTPS verwenden" />
+      </div>
+      ${err && html`<div class="notice err"><${Icon} name="error" />${err}</div>`}
+      ${test && html`<div class="notice"><${Icon} name="check_circle" /><div>
+        <div style=${{ fontWeight: 600 }}>Verbindung erfolgreich</div>
+        <div class="xs mono">Issuer: ${test.issuer}</div>
+        <div class="xs">PKCE (S256): ${test.pkce ? 'unterstützt' : 'nicht angekündigt'} · UserInfo: ${test.userinfoEndpoint ? 'ja' : 'nein'} · Logout-Endpunkt: ${test.endSessionEndpoint ? 'ja' : 'nein'}</div>
+      </div></div>`}
+      <div class="btn-row">
+        <button class="btn btn-primary md" disabled=${busy}><${Icon} name="save" />Speichern</button>
+        <button type="button" class="btn btn-ghost md" disabled=${busy || !f.issuer || !f.clientId} onClick=${runTest}><${Icon} name="network_check" />Speichern & Verbindung testen</button>
+        ${s.hasClientSecret && html`<button type="button" class="btn btn-danger md" disabled=${busy} onClick=${async () => { if (!confirm('Gespeichertes Client-Secret löschen?')) return; try { const r = await api('/admin/oidc', { method: 'PUT', body: { clearClientSecret: true } }); fill(r.oidc); app.flash('Client-Secret gelöscht'); } catch (x) { setErr(x.message); } }}>Secret löschen</button>`}
+      </div>
+    </form>`;
+}
+
 const AUDIT_LABEL = {
   'setup.admin_created': 'Administrator bei Ersteinrichtung angelegt', 'user.registered': 'Registriert', 'login.success': 'Anmeldung',
   'login.failed': 'Fehlgeschlagene Anmeldung', 'login.lockout': 'Konto nach Fehlversuchen gesperrt', 'login.locked': 'Anmeldung trotz Sperre versucht',
@@ -358,6 +452,8 @@ const AUDIT_LABEL = {
   'doc.restored': 'Dokument wiederhergestellt', 'doc.purged': 'Dokument endgültig gelöscht', 'doc.reviewed': 'Als geprüft markiert',
   'doc.imported': 'Dokumente importiert', 'doc.revision_restored': 'Version wiederhergestellt', 'folder.created': 'Ordner angelegt',
   'folder.updated': 'Ordner geändert', 'folder.deleted': 'Ordner gelöscht',
+  'login.sso_failed': 'SSO-Anmeldung fehlgeschlagen', 'user.sso_created': 'Benutzer per SSO angelegt',
+  'user.sso_role_synced': 'Rolle aus SSO-Gruppen übernommen', 'admin.sso_updated': 'SSO-Einstellungen geändert',
 };
 
 function AuditLog({ app }) {
@@ -404,7 +500,7 @@ export function AdminPage({ app }) {
     <div class="page g18" style=${{ maxWidth: '1100px' }} data-screen-label="Verwaltung">
       <div><h1 class="h1">Verwaltung</h1><p class="sub">Benutzer, Rollen und Systemeinstellungen.</p></div>
       <div class="tabs" role="tablist">
-        ${[['users', 'Benutzer'], ['system', 'System'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
+        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>
       ${tab === 'users' && html`
         <div class="panel">
@@ -416,6 +512,7 @@ export function AdminPage({ app }) {
         </div>
         <${CreateUser} app=${app} reload=${reload} />`}
       ${tab === 'system' && html`<${SystemSettings} app=${app} />`}
+      ${tab === 'sso' && html`<${SsoSettings} app=${app} />`}
       ${tab === 'audit' && html`<${AuditLog} app=${app} />`}
     </div>`;
 }

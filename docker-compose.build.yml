@@ -1,0 +1,8 @@
+# Optional: Image lokal aus dem Quellcode bauen statt aus der Registry zu ziehen.
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  rackbook:
+    image: rackbook:local
+    pull_policy: build
+    build:
+      context: .

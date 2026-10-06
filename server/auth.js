@@ -16,7 +16,7 @@ export function audit(req, action, target, details) {
       details === undefined ? null : JSON.stringify(details));
 }
 
-function parseCookies(header) {
+export function parseCookies(header) {
   const out = {};
   for (const part of String(header || '').split(';')) {
     const i = part.indexOf('=');
@@ -27,7 +27,7 @@ function parseCookies(header) {
   return out;
 }
 
-function cookieSecure(req) {
+export function cookieSecure(req) {
   return config.cookieSecure === 'auto' ? !!req.secure : config.cookieSecure;
 }
 
@@ -90,6 +90,8 @@ export function publicUser(u) {
   return {
     id: u.id, username: u.username, displayName: u.display_name, role: u.role, status: u.status,
     totpEnabled: !!u.totp_enabled, mustChangePassword: !!u.must_change_password,
+    hasPassword: String(u.password_hash || '').startsWith('scrypt$'),
+    sso: !!db.prepare('SELECT 1 FROM user_identities WHERE user_id = ?').get(u.id),
     createdAt: u.created_at, lastLoginAt: u.last_login_at ?? null, settings,
   };
 }

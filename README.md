@@ -44,15 +44,17 @@ docker compose up -d
 
 Danach `http://<server>:3000` öffnen und das Administratorkonto anlegen.
 
-Ist das Image noch nicht in der Registry verfügbar (oder privat), baut Compose es automatisch lokal. Explizit lokal bauen:
+Für den Betrieb werden nur `docker-compose.yml` und `.env` benötigt (z. B. in `/opt/stacks/rackbook` für Dockge/Portainer). Das Image kommt aus `ghcr.io/jonesmen/rackbook`.
+
+Lokal aus dem Quellcode bauen (im geklonten Repo):
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 ### Nur mit `docker-compose.yml` und `.env`
 
-Ab einem Release (`v*`-Tag) hängen `docker-compose.yml` und `rackbook.env` (auf die Version festgelegt) am GitHub-Release. Beide in einen Ordner legen, `rackbook.env` in `.env` umbenennen, den Abschnitt `build:` aus der Compose-Datei entfernen und `docker compose up -d` ausführen. Ist das GHCR-Paket privat, vorher `docker login ghcr.io` ausführen oder das Paket auf GitHub öffentlich stellen.
+Ab einem Release (`v*`-Tag) hängen `docker-compose.yml` und `rackbook.env` (auf die Version festgelegt) am GitHub-Release. Beide in einen Ordner legen, `rackbook.env` in `.env` umbenennen und `docker compose up -d` ausführen. Ist das GHCR-Paket privat, vorher `docker login ghcr.io` ausführen oder das Paket auf GitHub öffentlich stellen.
 
 ## Konfiguration
 
@@ -74,6 +76,27 @@ Alle Einstellungen stehen kommentiert in [`.env`](.env). Die wichtigsten:
 | `SEED_SAMPLE_DOCS` | `false` | Beispieldokumente beim ersten Start |
 
 Registrierung, Standardrolle und Prüfintervall lassen sich später auch unter **Verwaltung → System** ändern.
+
+## Single Sign-On mit Authentik (OIDC)
+
+Komplett in der Oberfläche konfigurierbar unter **Verwaltung → Single Sign-On**.
+
+1. In Authentik: **Anwendungen → Provider → Erstellen → OAuth2/OpenID-Provider**
+   - Client-Typ: `Confidential`
+   - Redirect-URI (strict): die in Rackbook angezeigte Adresse, z. B. `https://docs.example.de/api/auth/oidc/callback`
+   - Scopes: `openid`, `profile`, `email` (Standard-Mappings – `profile` liefert in Authentik auch den Claim `groups`)
+2. **Anwendungen → Anwendungen → Erstellen**, Provider auswählen, Slug z. B. `rackbook`.
+3. In Rackbook eintragen:
+   - Issuer-URL: `https://auth.example.de/application/o/rackbook/`
+   - Client-ID und Client-Secret aus dem Provider
+   - Optional Gruppen: *Erlaubte Gruppen*, *Administrator-Gruppen*, *Bearbeiter-Gruppen* (Namen der Authentik-Gruppen)
+4. **Speichern & Verbindung testen**, dann *Single Sign-On aktivieren*.
+
+Weitere Optionen: Benutzer automatisch anlegen, Rollen bei jeder Anmeldung aus Gruppen synchronisieren, bestehende Konten über den Benutzernamen verknüpfen, Passwort-Anmeldung deaktivieren (Administratoren behalten einen Notfallzugang), automatische Weiterleitung zum Provider (Notfallzugang über `/?local`) und Abmelden beim Provider.
+
+Sicherheit: Authorization Code Flow mit PKCE (S256), `state` und `nonce`, Signaturprüfung des ID-Tokens über die JWKS des Providers (`openid-client`). Das Client-Secret wird verschlüsselt gespeichert und nie wieder an den Browser ausgeliefert. Zwei-Faktor-Schutz für SSO-Benutzer übernimmt Authentik.
+
+Damit die Redirect-URI mit `https://` erzeugt wird, hinter dem Reverse Proxy `PUBLIC_URL` und `TRUST_PROXY=1` setzen. Nutzt Authentik ein Zertifikat einer eigenen CA, das CA-Zertifikat in den Container mounten und `NODE_EXTRA_CA_CERTS` setzen (siehe `.env`).
 
 ## Hinter einem Reverse Proxy (empfohlen, für HTTPS)
 
@@ -131,7 +154,7 @@ Zusätzlich können Administratoren unter **Einstellungen → Daten** ein JSON-B
 ```bash
 docker compose pull && docker compose up -d
 # bzw. bei lokalem Build:
-git pull && docker compose up -d --build
+git pull && docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 Datenbankmigrationen laufen beim Start automatisch.

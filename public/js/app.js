@@ -123,8 +123,10 @@ class App extends Component {
   }
   async logout() {
     if (this.isDirty() && !confirm('Ungespeicherte Änderungen verwerfen und abmelden?')) return;
-    try { await api('/auth/logout', { method: 'POST', body: {} }); } catch { /* egal */ }
+    let redirect = null;
+    try { redirect = (await api('/auth/logout', { method: 'POST', body: {} })).redirect; } catch { /* egal */ }
     setCsrf(null);
+    if (redirect) { location.assign(redirect); return; }
     history.replaceState(null, '', '/');
     this.setState({ boot: 'loading', user: null, docs: [], draft: null, userMenu: false });
     this.boot();
