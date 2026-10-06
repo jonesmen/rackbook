@@ -115,6 +115,26 @@ const MIGRATIONS = [
   );
   CREATE INDEX user_identities_user ON user_identities(user_id);
   `,
+  // 3: Zugriffstokens für den MCP-Server (KI-Assistenten) und Herkunft von Änderungen
+  `
+  CREATE TABLE mcp_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '["read"]',
+    folders TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    last_used_at INTEGER,
+    last_used_ip TEXT,
+    revoked_at INTEGER
+  );
+  CREATE INDEX mcp_tokens_user ON mcp_tokens(user_id);
+  ALTER TABLE documents ADD COLUMN updated_via TEXT;
+  ALTER TABLE revisions ADD COLUMN via TEXT;
+  `,
 ];
 
 export function migrate() {

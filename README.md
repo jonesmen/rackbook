@@ -98,6 +98,44 @@ Sicherheit: Authorization Code Flow mit PKCE (S256), `state` und `nonce`, Signat
 
 Damit die Redirect-URI mit `https://` erzeugt wird, hinter dem Reverse Proxy `PUBLIC_URL` und `TRUST_PROXY=1` setzen. Nutzt Authentik ein Zertifikat einer eigenen CA, das CA-Zertifikat in den Container mounten und `NODE_EXTRA_CA_CERTS` setzen (siehe `.env`).
 
+## KI-Assistenten anbinden (MCP-Server)
+
+Rackbook enthält einen leichtgewichtigen [MCP](https://modelcontextprotocol.io)-Server (Streamable HTTP, zustandslos) unter `https://<rackbook>/mcp`. Damit kann eine KI (Claude Code, Claude Desktop, Cursor, VS Code, LibreChat …) Dokumentation lesen und pflegen.
+
+1. **Verwaltung → KI-Zugriff**: MCP-Server aktivieren und festlegen, was KIs maximal dürfen (Lesen, Schreiben, Löschen, Ordner anlegen), maximale Token-Laufzeit, Rate-Limit, Tag für KI-Änderungen und eigene **Hausregeln** für die KI.
+2. **Einstellungen → KI-Zugriff (MCP)**: persönliches Token erstellen – mit Rechten (höchstens die eigene Rolle), optionaler Beschränkung auf Ordner und Gültigkeit. Das Token wird nur einmal angezeigt, zusammen mit fertigen Konfigurationen:
+
+```bash
+# Claude Code
+claude mcp add --transport http rackbook https://docs.example.de/mcp \
+  --header "Authorization: Bearer rbm_…"
+```
+
+```json
+// Claude Desktop (claude_desktop_config.json)
+{ "mcpServers": { "rackbook": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://docs.example.de/mcp", "--header", "Authorization:${AUTH}"],
+  "env": { "AUTH": "Bearer rbm_…" } } } }
+```
+
+**Damit die KI weiß, wie und wo sie dokumentiert**, bekommt sie beim Verbinden eine Anleitung: alle Ordner mit IDs, vorhandene Tags, unterstütztes Markdown, empfohlene Strukturen für Dienste, Hosts und Runbooks, Regeln (erst suchen, dann schreiben; keine Geheimnisse speichern; nichts erfinden) sowie die Hausregeln aus der Verwaltung.
+
+| Werkzeug | Recht | Zweck |
+|---|---|---|
+| `rackbook_overview` | Lesen | Anleitung, Ordner, Tags, zuletzt geändert |
+| `search_documents`, `list_documents`, `get_document`, `list_open_todos` | Lesen | Suchen und Lesen |
+| `create_document` | Schreiben | Neues Dokument (mit Duplikatprüfung) |
+| `append_to_document` | Schreiben | Text an einen Abschnitt anhängen |
+| `replace_in_document` | Schreiben | Eindeutige Textstelle ersetzen |
+| `update_document` | Schreiben | Komplett überarbeiten (mit Versionsprüfung) |
+| `delete_document` | Löschen | In den Papierkorb verschieben |
+| `create_folder` | Ordner | Neuen Ordner anlegen |
+
+Dazu Vorlagen (Prompts) `dienst_dokumentieren`, `host_dokumentieren`, `runbook_erstellen`, `dokumentation_pruefen` und Ressourcen (`rackbook://guide`, `rackbook://doc/{id}`).
+
+Sicherheit: Tokens werden nur als Hash gespeichert und lassen sich jederzeit widerrufen (auch durch Admins). Die effektiven Rechte werden bei **jeder** Anfrage neu berechnet (Token ∩ aktuelle Rolle ∩ Systemeinstellungen) – eine Herabstufung oder das Abschalten wirkt sofort. Jede KI-Änderung wird versioniert, im Audit-Log mit Token-Namen protokolliert und im Dokument als „KI“ gekennzeichnet. Fremde Browser-Origins werden abgewiesen (Schutz vor DNS-Rebinding), Sitzungs-Cookies gelten für `/mcp` nicht.
+
 ## Hinter einem Reverse Proxy (empfohlen, für HTTPS)
 
 `.env`:

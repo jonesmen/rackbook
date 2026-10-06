@@ -7,6 +7,7 @@ import {
 } from '../security.js';
 import { audit, publicUser, revokeUserSessions } from '../auth.js';
 import { cleanName } from './auth.js';
+import { listTokens, createToken, revokeToken } from '../mcp.js';
 
 const r = Router();
 
@@ -123,6 +124,19 @@ r.post('/totp/disable', async (req, res) => {
   db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_last_step = 0, updated_at = ? WHERE id = ?').run(Date.now(), u.id);
   audit(req, 'user.2fa_disabled', u.username);
   res.json({ user: publicUser(load(u.id)) });
+});
+
+// ---------- MCP-Zugriffstokens (KI-Assistenten) ----------
+r.get('/mcp-tokens', (req, res) => res.json({ tokens: listTokens(req.user.id) }));
+r.post('/mcp-tokens', (req, res) => {
+  const { token, info } = createToken(req.user, req.body || {});
+  audit(req, 'mcp.token_created', info.name, { scopes: info.scopes, folders: info.folders, expiresAt: info.expiresAt });
+  res.status(201).json({ token, info });
+});
+r.delete('/mcp-tokens/:id', (req, res) => {
+  revokeToken(Number(req.params.id), req.user.id);
+  audit(req, 'mcp.token_revoked', String(req.params.id));
+  res.json({ ok: true });
 });
 
 export default r;

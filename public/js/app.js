@@ -701,6 +701,7 @@ class App extends Component {
               <button type="button" class="folder-chip" style=${{ background: c.background }} onClick=${openFolder}><span class="ms" style=${{ color: c.color }}>${f.icon}</span>${f.name}</button>
               ${d.tags.map(t => html`<button type="button" class="tag-chip" onClick=${() => this.go('docs', { folder: null, tag: t, q: '' })}>#${t}</button>`)}
               <span class="small muted" style=${{ marginLeft: '5px', fontSize: '12px' }}>Geändert ${fmtDate(d.updated)}${d.updatedBy ? ` von ${d.updatedBy}` : ''} · ${fmtWords(wordsOf(d.content))}</span>
+              ${d.updatedVia === 'mcp' && html`<span class="pill editor" title="Zuletzt von einem KI-Assistenten über MCP geändert"><span class="ms s15">smart_toy</span>KI</span>`}
             </div>
           </div>
           <div class="doc-actions">
@@ -885,7 +886,7 @@ class App extends Component {
               ${list.map(x => html`
                 <button type="button" class=${'rev-item' + (x === sel ? ' on' : '')} onClick=${() => this.setState({ rev: { ...s.rev, sel: x.id } })}>
                   <div class="t">Version ${x.version}${x.id === null ? ' (aktuell)' : ''}</div>
-                  <div class="m">${fmtDate(x.created)}${x.author ? ' · ' + x.author : ''}</div>
+                  <div class="m">${fmtDate(x.created)}${x.author ? ' · ' + x.author : ''}${(x.via || (x.id === null ? d.updatedVia : '')) === 'mcp' ? ' · KI' : ''}</div>
                 </button>`)}
             </div>
             <div class="rev-preview">

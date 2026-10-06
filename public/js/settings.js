@@ -1,5 +1,6 @@
 import { html, useState, useEffect } from '/vendor/preact-htm.js';
 import { api } from './api.js';
+import { McpPanel, McpAdmin } from './mcp-views.js';
 import { Icon, Toggle, fcol, fmtDate, fmtDateTime, describeUA, ROLE_LABEL } from './util.js';
 
 const PanelHead = ({ title, desc }) => html`<div><h2 class="h2 s16">${title}</h2>${desc && html`<p class="desc">${desc}</p>`}</div>`;
@@ -255,6 +256,7 @@ export function SettingsPage({ app }) {
       <${ProfilePanel} app=${app} />
       <${AppearancePanel} app=${app} />
       <${SecurityPanel} app=${app} />
+      <${McpPanel} app=${app} />
       ${app.canEdit() && html`<${FoldersPanel} app=${app} />`}
       ${app.canEdit() && html`<${TrashPanel} app=${app} />`}
       <${DataPanel} app=${app} />
@@ -454,6 +456,8 @@ const AUDIT_LABEL = {
   'folder.updated': 'Ordner geändert', 'folder.deleted': 'Ordner gelöscht',
   'login.sso_failed': 'SSO-Anmeldung fehlgeschlagen', 'user.sso_created': 'Benutzer per SSO angelegt',
   'user.sso_role_synced': 'Rolle aus SSO-Gruppen übernommen', 'admin.sso_updated': 'SSO-Einstellungen geändert',
+  'mcp.token_created': 'KI-Token erstellt', 'mcp.token_revoked': 'KI-Token widerrufen', 'admin.mcp_token_revoked': 'KI-Token durch Admin widerrufen',
+  'admin.mcp_updated': 'KI-Zugriff-Einstellungen geändert',
 };
 
 function AuditLog({ app }) {
@@ -481,7 +485,8 @@ function AuditLog({ app }) {
           <tr>
             <td class="xs muted" style=${{ whiteSpace: 'nowrap' }}>${fmtDateTime(e.ts)}</td>
             <td><span class=${sec(e.action) ? 'err' : ''} style=${{ fontWeight: 600 }}>${AUDIT_LABEL[e.action] || e.action}</span>
-              ${e.details && e.details.title && html`<div class="xs muted">${e.details.title}</div>`}</td>
+              ${e.details && e.details.title && html`<div class="xs muted">${e.details.title}</div>`}
+              ${e.details && e.details.via === 'mcp' && html`<span class="pill editor">KI · ${e.details.token}</span>`}</td>
             <td class="small">${e.username || '–'}</td>
             <td class="xs muted mono">${e.target || ''}</td>
             <td class="xs muted mono">${e.ip || ''}</td>
@@ -500,7 +505,7 @@ export function AdminPage({ app }) {
     <div class="page g18" style=${{ maxWidth: '1100px' }} data-screen-label="Verwaltung">
       <div><h1 class="h1">Verwaltung</h1><p class="sub">Benutzer, Rollen und Systemeinstellungen.</p></div>
       <div class="tabs" role="tablist">
-        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
+        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['mcp', 'KI-Zugriff'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>
       ${tab === 'users' && html`
         <div class="panel">
@@ -513,6 +518,7 @@ export function AdminPage({ app }) {
         <${CreateUser} app=${app} reload=${reload} />`}
       ${tab === 'system' && html`<${SystemSettings} app=${app} />`}
       ${tab === 'sso' && html`<${SsoSettings} app=${app} />`}
+      ${tab === 'mcp' && html`<${McpAdmin} app=${app} />`}
       ${tab === 'audit' && html`<${AuditLog} app=${app} />`}
     </div>`;
 }

@@ -10,6 +10,7 @@ import meRoutes from './routes/me.js';
 import docRoutes, { insertDoc } from './routes/docs.js';
 import adminRoutes from './routes/admin.js';
 import { DEFAULT_FOLDERS, sampleDocs } from './seed.js';
+import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint } from './mcp.js';
 
 const publicDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -39,6 +40,11 @@ export function createApp() {
   app.use(securityHeaders);
   app.get('/healthz', (req, res) => { db.prepare('SELECT 1').get(); res.json({ status: 'ok' }); });
 
+  // MCP-Server für KI-Assistenten (Bearer-Token, keine Cookies → eigener Pfad ohne CSRF/Session)
+  app.all('/mcp', express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 3) / 1048576)) + 'mb' }), (req, res, next) => {
+    Promise.resolve(mcpHandler(req, res)).catch(next);
+  });
+
   const api = express.Router();
   api.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   api.use(express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 25) / 1048576)) + 'mb' }));
@@ -51,6 +57,10 @@ export function createApp() {
     staleDays: getSetting('stale_days', config.staleDaysDefault),
     trashRetentionDays: config.trashRetentionDays,
     maxDocBytes: config.maxDocBytes,
+    mcp: (() => {
+      const m = getMcpSettings();
+      return { enabled: m.enabled, endpoint: mcpEndpoint(req), grantable: m.enabled ? grantableScopes(req.user.role, m) : [], maxTokenDays: m.maxTokenDays };
+    })(),
   }));
   api.use('/admin', requireRole('admin'), adminRoutes);
   api.use('/', docRoutes);

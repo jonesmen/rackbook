@@ -7,6 +7,7 @@ import { USERNAME_RE, cleanName } from './auth.js';
 import { folderExists, insertDoc, normContent, normTags, normTitle } from './docs.js';
 import { DEFAULT_FOLDERS, sampleDocs } from '../seed.js';
 import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
+import { getMcpSettings, saveMcpSettings, listTokens, revokeToken, mcpEndpoint } from '../mcp.js';
 
 const r = Router();
 r.use(requireRole('admin'));
@@ -133,6 +134,19 @@ r.put('/oidc', (req, res) => {
 });
 r.post('/oidc/test', async (req, res) => res.json({ result: await testConnection() }));
 
+// ---------- KI-Zugriff (MCP) ----------
+r.get('/mcp', (req, res) => res.json({ settings: getMcpSettings(), endpoint: mcpEndpoint(req), tokens: listTokens() }));
+r.put('/mcp', (req, res) => {
+  const settings = saveMcpSettings(req.body);
+  audit(req, 'admin.mcp_updated', null, { ...settings, guidelines: undefined });
+  res.json({ settings, endpoint: mcpEndpoint(req), tokens: listTokens() });
+});
+r.delete('/mcp-tokens/:id', (req, res) => {
+  revokeToken(Number(req.params.id));
+  audit(req, 'admin.mcp_token_revoked', String(req.params.id));
+  res.json({ tokens: listTokens() });
+});
+
 // ---------- Audit-Log ----------
 r.get('/audit', (req, res) => {
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
@@ -176,7 +190,7 @@ r.post('/restore', (req, res) => {
       const ts = n => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : Date.now());
       if (exists) {
         db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, pinned = ?, version = version + 1,
-                    updated_at = ?, updated_by = ?, deleted_at = NULL WHERE id = ?`)
+                    updated_at = ?, updated_by = ?, updated_via = 'web', deleted_at = NULL WHERE id = ?`)
           .run(normTitle(d.title), folder, JSON.stringify(normTags(d.tags)), normContent(d.content), d.pinned ? 1 : 0, ts(d.updated), req.user.id, id);
         updated++;
       } else {

@@ -401,3 +401,6 @@ select.input { cursor: pointer; }
   .rev-list { border-right: 0; max-height: 200px; }
   .toc { display: none; }
 }
+
+.tag-chip.sel-chip { background: var(--acc-soft); color: var(--ink); box-shadow: 0 0 0 1px var(--acc-strong); }
+.set-row:disabled { color: inherit; }
