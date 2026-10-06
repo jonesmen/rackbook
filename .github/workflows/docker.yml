@@ -14,9 +14,15 @@ permissions:
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
+# Ältere Läufe desselben Branches/PRs abbrechen, wenn ein neuer startet
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,6 +35,7 @@ jobs:
   docker:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
