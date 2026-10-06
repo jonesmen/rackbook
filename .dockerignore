@@ -1,0 +1,11 @@
+node_modules
+data
+public/vendor
+public/fonts
+.git
+.github
+.env
+*.log
+test
+docker-compose.yml
+README.md

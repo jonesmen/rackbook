@@ -1,0 +1,45 @@
+# Rackbook – Docker-Compose-Stack
+# Start:   docker compose up -d
+# Update:  docker compose pull && docker compose up -d
+# Logs:    docker compose logs -f rackbook
+# Alle Einstellungen werden in der Datei .env vorgenommen.
+
+name: rackbook
+
+services:
+  rackbook:
+    image: ghcr.io/jonesmen/rackbook:${RACKBOOK_VERSION:-latest}
+    # Alternativ lokal bauen: docker compose up -d --build
+    build:
+      context: .
+    container_name: rackbook
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+    ports:
+      - "${RACKBOOK_BIND:-0.0.0.0}:${RACKBOOK_PORT:-3000}:3000"
+    volumes:
+      - rackbook-data:/data
+    # Härtung: schreibgeschütztes Dateisystem, keine Capabilities, keine Rechteausweitung
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 200
+    mem_limit: ${RACKBOOK_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  rackbook-data:
+    name: rackbook-data
