@@ -44,7 +44,7 @@ export function toDto(d) {
     id: d.id, title: d.title, folder: d.folder_id, tags: JSON.parse(d.tags || '[]'), content: d.content,
     pinned: !!d.pinned, bookmarked: !!d.bookmarked, version: d.version,
     created: d.created_at, createdBy: d.created_by_name ?? null,
-    updated: d.updated_at, updatedBy: d.updated_by_name ?? null,
+    updated: d.updated_at, updatedBy: d.updated_by_name ?? null, updatedVia: d.updated_via || 'web',
     reviewed: d.reviewed_at ?? null, deleted: d.deleted_at ?? null,
   };
 }
@@ -55,21 +55,21 @@ function loadDoc(req, id, { includeDeleted = false } = {}) {
   return d;
 }
 
-function saveRevision(d, userId) {
-  db.prepare(`INSERT INTO revisions (doc_id, version, title, folder_id, tags, content, created_at, created_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(d.id, d.version, d.title, d.folder_id, d.tags, d.content, d.updated_at, d.updated_by ?? userId);
+export function saveRevision(d, userId) {
+  db.prepare(`INSERT INTO revisions (doc_id, version, title, folder_id, tags, content, created_at, created_by, via)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(d.id, d.version, d.title, d.folder_id, d.tags, d.content, d.updated_at, d.updated_by ?? userId, d.updated_via ?? null);
   db.prepare(`DELETE FROM revisions WHERE doc_id = ? AND id NOT IN
               (SELECT id FROM revisions WHERE doc_id = ? ORDER BY version DESC LIMIT ?)`).run(d.id, d.id, config.revisionLimit);
 }
 
-export function insertDoc({ id, title, folder, tags, content, pinned = false, created, updated }, userId) {
+export function insertDoc({ id, title, folder, tags, content, pinned = false, created, updated }, userId, via = 'web') {
   const now = Date.now();
   const docId = id || randomToken(9);
-  db.prepare(`INSERT INTO documents (id, title, folder_id, content, tags, pinned, created_at, created_by, updated_at, updated_by)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO documents (id, title, folder_id, content, tags, pinned, created_at, created_by, updated_at, updated_by, updated_via)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(docId, normTitle(title), folder, normContent(content), JSON.stringify(normTags(tags)), pinned ? 1 : 0,
-      created || updated || now, userId, updated || now, userId);
+      created || updated || now, userId, updated || now, userId, via);
   return docId;
 }
 
@@ -173,7 +173,7 @@ r.put('/docs/:id', editor, (req, res) => {
     };
     if (next.title === d.title && next.folder === d.folder_id && next.tags === d.tags && next.content === d.content) return d;
     saveRevision(d, req.user.id);
-    db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?
+    db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'web'
                 WHERE id = ?`).run(next.title, next.folder, next.tags, next.content, Date.now(), req.user.id, d.id);
     return loadDoc(req, d.id);
   });
@@ -212,7 +212,7 @@ r.post('/docs/:id/todo', editor, (req, res) => {
     if (!m || (text !== undefined && m[4] !== text)) throw new HttpError(409, 'Die Aufgabe wurde inzwischen geändert. Bitte neu laden.');
     lines[Number(line)] = m[1] + (checked ? 'x' : ' ') + m[3] + m[4];
     saveRevision(d, req.user.id);
-    db.prepare('UPDATE documents SET content = ?, version = version + 1, updated_at = ?, updated_by = ? WHERE id = ?')
+    db.prepare("UPDATE documents SET content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'web' WHERE id = ?")
       .run(lines.join('\n'), Date.now(), req.user.id, d.id);
     return loadDoc(req, d.id);
   });
@@ -245,11 +245,11 @@ r.delete('/docs/:id/purge', admin, (req, res) => {
 // ---------- Versionen ----------
 r.get('/docs/:id/revisions', (req, res) => {
   const d = loadDoc(req, req.params.id);
-  const rows = db.prepare(`SELECT r.id, r.version, r.title, r.folder_id, r.tags, r.content, r.created_at, u.display_name AS author
+  const rows = db.prepare(`SELECT r.id, r.version, r.title, r.folder_id, r.tags, r.content, r.created_at, r.via, u.display_name AS author
                            FROM revisions r LEFT JOIN users u ON u.id = r.created_by WHERE r.doc_id = ? ORDER BY r.version DESC`).all(d.id);
   res.json({
     revisions: rows.map(x => ({
-      id: x.id, version: x.version, title: x.title, folder: x.folder_id, tags: JSON.parse(x.tags), content: x.content, created: x.created_at, author: x.author,
+      id: x.id, version: x.version, title: x.title, folder: x.folder_id, tags: JSON.parse(x.tags), content: x.content, created: x.created_at, author: x.author, via: x.via || 'web',
     })),
   });
 });
@@ -261,7 +261,7 @@ r.post('/docs/:id/revisions/:rev/restore', editor, (req, res) => {
     if (!rev) throw new HttpError(404, 'Version nicht gefunden.');
     saveRevision(d, req.user.id);
     const folder = folderExists(rev.folder_id) ? rev.folder_id : d.folder_id;
-    db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ? WHERE id = ?`)
+    db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'web' WHERE id = ?`)
       .run(rev.title, folder, rev.tags, rev.content, Date.now(), req.user.id, d.id);
     return loadDoc(req, d.id);
   });
