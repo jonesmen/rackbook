@@ -102,6 +102,19 @@ const MIGRATIONS = [
   );
   CREATE INDEX audit_ts ON audit_log(ts);
   `,
+  // 2: Verknüpfung von Benutzern mit externen Identitäten (OIDC / SSO)
+  `
+  CREATE TABLE user_identities (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT,
+    created_at INTEGER NOT NULL,
+    last_login_at INTEGER,
+    PRIMARY KEY (issuer, subject)
+  );
+  CREATE INDEX user_identities_user ON user_identities(user_id);
+  `,
 ];
 
 export function migrate() {

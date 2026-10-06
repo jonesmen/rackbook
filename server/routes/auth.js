@@ -5,7 +5,8 @@ import {
   HttpError, RateLimiter, hashPassword, verifyPassword, dummyVerify, validatePassword,
   signTicket, verifyTicket, verifyTotp, decrypt,
 } from '../security.js';
-import { audit, clientIp, createSession, destroySession, publicUser } from '../auth.js';
+import { audit, clientIp, createSession, destroySession, publicUser, parseCookies, cookieSecure } from '../auth.js';
+import { publicOidcState, getOidcSettings, startLogin, readFlow, finishLogin, resolveUser, endSessionUrl } from '../oidc.js';
 
 const r = Router();
 const limiter = new RateLimiter(config.rateLimitAuthPerWindow, config.rateLimitWindowMinutes * 60000);
@@ -31,6 +32,7 @@ r.get('/state', (req, res) => {
     setupRequired,
     registrationEnabled: setupRequired || !!getSetting('registration_enabled', config.allowRegistrationDefault),
     passwordMinLength: config.passwordMinLength,
+    sso: publicOidcState(),
     user: req.user || null,
     csrfToken: req.user ? req.csrfToken : null,
   });
@@ -92,6 +94,11 @@ async function checkCredentials(req, username, password) {
     throw generic;
   }
   if (user.status === 'pending') throw new HttpError(403, 'Dein Konto wartet noch auf Freischaltung durch einen Administrator.');
+  const sso = getOidcSettings();
+  if (sso.enabled && sso.disablePasswordLogin && user.role !== 'admin') {
+    audit(req, 'login.failed', username, { reason: 'password_login_disabled' });
+    throw new HttpError(403, 'Die Anmeldung mit Passwort ist deaktiviert. Bitte über SSO anmelden.');
+  }
   if (user.status !== 'active') { audit(req, 'login.failed', username, { reason: 'disabled' }); throw new HttpError(403, 'Dieses Konto ist deaktiviert.'); }
   return user;
 }
@@ -132,10 +139,56 @@ r.post('/login/mfa', rateLimit, (req, res) => {
   res.json({ user: publicUser(user), csrfToken });
 });
 
-r.post('/logout', (req, res) => {
+r.post('/logout', async (req, res) => {
+  const wasSso = req.user && req.user.sso;
   if (req.user) audit(req, 'logout', req.user.username);
   destroySession(req, res);
-  res.json({ ok: true });
+  res.json({ ok: true, redirect: wasSso ? await endSessionUrl(req) : null });
+});
+
+// ---------- Single Sign-On (OpenID Connect) ----------
+const FLOW_COOKIE = 'rb_oidc';
+function flowCookie(req, res, value, maxAge) {
+  // SameSite=Lax: der Rücksprung vom Identity Provider ist eine Top-Level-Navigation von fremder Seite.
+  const parts = [`${FLOW_COOKIE}=${value}`, 'Path=/api/auth/oidc', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`];
+  if (cookieSecure(req)) parts.push('Secure');
+  res.append('Set-Cookie', parts.join('; '));
+}
+const ssoError = (res, msg) => res.redirect(303, '/?sso_error=' + encodeURIComponent(String(msg).slice(0, 300)));
+
+r.get('/oidc/login', rateLimit, async (req, res) => {
+  try {
+    const { url, blob } = await startLogin(req);
+    flowCookie(req, res, encodeURIComponent(blob), 600);
+    res.redirect(303, url);
+  } catch (e) {
+    ssoError(res, e.status && e.status < 500 ? e.message : 'SSO-Anmeldung konnte nicht gestartet werden.');
+  }
+});
+
+r.get('/oidc/callback', rateLimit, async (req, res) => {
+  const blob = parseCookies(req.headers.cookie)[FLOW_COOKIE];
+  flowCookie(req, res, '', 0);
+  if (req.query.error) {
+    audit(req, 'login.sso_failed', null, { error: String(req.query.error).slice(0, 100) });
+    return ssoError(res, req.query.error === 'access_denied' ? 'Die Anmeldung wurde beim Identity Provider abgelehnt.' : `Fehler vom Identity Provider: ${String(req.query.error_description || req.query.error).slice(0, 200)}`);
+  }
+  const flow = blob && readFlow(blob);
+  if (!flow) return ssoError(res, 'Die SSO-Anmeldung ist abgelaufen. Bitte erneut versuchen.');
+  try {
+    const result = await finishLogin(req, flow);
+    const { user, created, roleChanged } = resolveUser(result);
+    req.user = publicUser(user);
+    if (created) audit(req, 'user.sso_created', user.username, { role: user.role });
+    if (roleChanged) audit(req, 'user.sso_role_synced', user.username, { role: user.role });
+    createSession(req, res, user);
+    audit(req, 'login.success', user.username, { sso: true });
+    res.redirect(303, '/');
+  } catch (e) {
+    audit(req, 'login.sso_failed', null, { error: String(e.message).slice(0, 200) });
+    if (!e.status || e.status >= 500) console.error('OIDC-Callback:', e);
+    ssoError(res, e.status && e.status < 500 ? e.message : 'SSO-Anmeldung fehlgeschlagen.');
+  }
 });
 
 export default r;

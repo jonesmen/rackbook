@@ -77,6 +77,27 @@ Alle Einstellungen stehen kommentiert in [`.env`](.env). Die wichtigsten:
 
 Registrierung, Standardrolle und Prüfintervall lassen sich später auch unter **Verwaltung → System** ändern.
 
+## Single Sign-On mit Authentik (OIDC)
+
+Komplett in der Oberfläche konfigurierbar unter **Verwaltung → Single Sign-On**.
+
+1. In Authentik: **Anwendungen → Provider → Erstellen → OAuth2/OpenID-Provider**
+   - Client-Typ: `Confidential`
+   - Redirect-URI (strict): die in Rackbook angezeigte Adresse, z. B. `https://docs.example.de/api/auth/oidc/callback`
+   - Scopes: `openid`, `profile`, `email` (Standard-Mappings – `profile` liefert in Authentik auch den Claim `groups`)
+2. **Anwendungen → Anwendungen → Erstellen**, Provider auswählen, Slug z. B. `rackbook`.
+3. In Rackbook eintragen:
+   - Issuer-URL: `https://auth.example.de/application/o/rackbook/`
+   - Client-ID und Client-Secret aus dem Provider
+   - Optional Gruppen: *Erlaubte Gruppen*, *Administrator-Gruppen*, *Bearbeiter-Gruppen* (Namen der Authentik-Gruppen)
+4. **Speichern & Verbindung testen**, dann *Single Sign-On aktivieren*.
+
+Weitere Optionen: Benutzer automatisch anlegen, Rollen bei jeder Anmeldung aus Gruppen synchronisieren, bestehende Konten über den Benutzernamen verknüpfen, Passwort-Anmeldung deaktivieren (Administratoren behalten einen Notfallzugang), automatische Weiterleitung zum Provider (Notfallzugang über `/?local`) und Abmelden beim Provider.
+
+Sicherheit: Authorization Code Flow mit PKCE (S256), `state` und `nonce`, Signaturprüfung des ID-Tokens über die JWKS des Providers (`openid-client`). Das Client-Secret wird verschlüsselt gespeichert und nie wieder an den Browser ausgeliefert. Zwei-Faktor-Schutz für SSO-Benutzer übernimmt Authentik.
+
+Damit die Redirect-URI mit `https://` erzeugt wird, hinter dem Reverse Proxy `PUBLIC_URL` und `TRUST_PROXY=1` setzen. Nutzt Authentik ein Zertifikat einer eigenen CA, das CA-Zertifikat in den Container mounten und `NODE_EXTRA_CA_CERTS` setzen (siehe `.env`).
+
 ## Hinter einem Reverse Proxy (empfohlen, für HTTPS)
 
 `.env`:

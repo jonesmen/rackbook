@@ -6,6 +6,7 @@ import { audit, publicUser, requireRole, revokeUserSessions } from '../auth.js';
 import { USERNAME_RE, cleanName } from './auth.js';
 import { folderExists, insertDoc, normContent, normTags, normTitle } from './docs.js';
 import { DEFAULT_FOLDERS, sampleDocs } from '../seed.js';
+import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
 
 const r = Router();
 r.use(requireRole('admin'));
@@ -121,6 +122,16 @@ r.put('/settings', (req, res) => {
   audit(req, 'admin.settings_updated', null, appSettings());
   res.json({ settings: appSettings() });
 });
+
+// ---------- Single Sign-On (OIDC) ----------
+r.get('/oidc', (req, res) => res.json({ oidc: oidcAdminView(req) }));
+r.put('/oidc', (req, res) => {
+  saveOidcSettings(req.body);
+  const v = oidcAdminView(req);
+  audit(req, 'admin.sso_updated', null, { enabled: v.enabled, issuer: v.issuer, clientId: v.clientId });
+  res.json({ oidc: v });
+});
+r.post('/oidc/test', async (req, res) => res.json({ result: await testConnection() }));
 
 // ---------- Audit-Log ----------
 r.get('/audit', (req, res) => {
