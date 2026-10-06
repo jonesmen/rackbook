@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Build: Abhängigkeiten installieren & Frontend-Assets bereitstellen ----------
-FROM node:22-alpine AS build
+# Läuft immer nativ auf der Build-Plattform (keine QEMU-Emulation für npm). Alle
+# Abhängigkeiten sind reines JavaScript, node_modules ist daher plattformunabhängig.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
