@@ -163,12 +163,19 @@ export class RateLimiter {
 }
 
 // ---------- HTTP-Sicherheitsheader ----------
+// Erweiterungen der CSP (z. B. erlaubte Einbettungen), von der App zur Laufzeit gesetzt.
+let cspExtra = () => ({ frame: [], img: [], media: [] });
+export function setCspExtra(fn) { cspExtra = fn; }
+
 export function securityHeaders(req, res, next) {
+  const x = cspExtra();
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self'",
-    "img-src 'self' data:",
+    ["img-src 'self' data: blob:", ...x.img].join(' '),
+    ["media-src 'self' blob:", ...x.media].join(' '),
+    ["frame-src 'self'", ...x.frame].join(' '),
     "font-src 'self'",
     "connect-src 'self'",
     "object-src 'none'",

@@ -10,6 +10,7 @@ import { checkFolderParent, checkDocParent } from '../tree.js';
 import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
 import { getMcpSettings, saveMcpSettings, listTokens, revokeToken, mcpEndpoint } from '../mcp.js';
 import { getShareSettings, saveShareSettings, listShares, revokeShare, revokeAllOfUser, activeShareCounts } from '../shares.js';
+import { getEditorSettings, normDrawioUrl, exportFiles, importFile, fileStats, invalidateCsp } from '../files.js';
 
 const r = Router();
 r.use(requireRole('admin'));
@@ -172,6 +173,30 @@ r.delete('/users/:id/shares', (req, res) => {
 });
 
 // ---------- Audit-Log ----------
+// ---------- Editor & Medien ----------
+r.get('/editor', (req, res) => res.json({ settings: getEditorSettings(), stats: fileStats() }));
+r.put('/editor', (req, res) => {
+  const b = req.body || {};
+  const cur = getEditorSettings();
+  const next = { ...cur };
+  if (b.uploads !== undefined) next.uploads = !!b.uploads;
+  if (b.embeds !== undefined) next.embeds = !!b.embeds;
+  if (b.uploadMaxMb !== undefined) {
+    const n = Math.round(Number(b.uploadMaxMb));
+    if (!(n >= 1 && n <= 2048)) throw new HttpError(400, 'Die maximale Dateigröße muss zwischen 1 und 2048 MB liegen.');
+    next.uploadMaxMb = n;
+  }
+  if (b.drawioUrl !== undefined) {
+    const u = normDrawioUrl(String(b.drawioUrl).trim());
+    if (u === null) throw new HttpError(400, 'Die Draw.io-Adresse muss mit https:// beginnen.');
+    next.drawioUrl = u;
+  }
+  setSetting('editor', next);
+  invalidateCsp();
+  audit(req, 'admin.editor_updated', null, next);
+  res.json({ settings: getEditorSettings(), stats: fileStats() });
+});
+
 r.get('/audit', (req, res) => {
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
   const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER;
@@ -186,9 +211,12 @@ r.get('/backup', (req, res) => {
     id: d.id, title: d.title, folder: d.folder_id, parent: d.parent_id ?? null, tags: JSON.parse(d.tags), content: d.content, pinned: !!d.pinned,
     created: d.created_at, updated: d.updated_at, reviewed: d.reviewed_at,
   }));
-  audit(req, 'admin.backup_exported', null, { documents: documents.length });
-  res.setHeader('Content-Disposition', `attachment; filename="rackbook-backup-${new Date().toISOString().slice(0, 10)}.json"`);
-  res.json({ app: 'rackbook', format: 2, exportedAt: Date.now(), folders, documents });
+  const synced = db.prepare('SELECT id, content, created_at, updated_at FROM synced_blocks').all()
+    .map(x => ({ id: x.id, content: x.content, created: x.created_at, updated: x.updated_at }));
+  const files = req.query.files !== undefined ? exportFiles() : undefined;
+  audit(req, 'admin.backup_exported', null, { documents: documents.length, files: files ? files.length : 0 });
+  res.setHeader('Content-Disposition', `attachment; filename="rackbook-backup-${new Date().toISOString().slice(0, 10)}${files ? '-komplett' : ''}.json"`);
+  res.json({ app: 'rackbook', format: 3, exportedAt: Date.now(), folders, documents, synced, ...(files ? { files } : {}) });
 });
 
 r.post('/restore', (req, res) => {
@@ -237,7 +265,17 @@ r.post('/restore', (req, res) => {
         db.prepare('UPDATE documents SET parent_id = ?, folder_id = ? WHERE id = ?').run(p.parent, p.folder, id);
       } catch { /* ignorieren */ }
     }
-    return { folders, created, updated };
+    let synced = 0, files = 0;
+    for (const x of Array.isArray(b.synced) ? b.synced : []) {
+      if (typeof x.id !== 'string' || !/^[A-Za-z0-9_-]{8,40}$/.test(x.id)) continue;
+      const now = Date.now();
+      db.prepare(`INSERT INTO synced_blocks (id, content, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(id) DO UPDATE SET content = excluded.content, version = version + 1, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+        .run(x.id, normContent(x.content), req.user.id, Number(x.created) || now, req.user.id, now);
+      synced++;
+    }
+    for (const f of Array.isArray(b.files) ? b.files : []) if (importFile(f, req.user.id)) files++;
+    return { folders, created, updated, synced, files };
   });
   audit(req, 'admin.backup_restored', null, result);
   res.json(result);

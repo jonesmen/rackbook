@@ -2,6 +2,7 @@
 // und wird per POST an den Server geschickt – es erscheint nie in einer Server-URL.
 import { html, render, useState, useEffect, useMemo } from '/vendor/preact-htm.js';
 import { md } from './md.js';
+import { hydrate, baseSortClick } from './hydrate.js';
 import { fcol, fmtDate, fmtDateTime, Icon } from './util.js';
 
 function parseHash() {
@@ -22,11 +23,19 @@ async function fetchShare(token, password) {
 
 // Interne Links: nur Dokumente dieser Freigabe bleiben anklickbar, alles andere wird zu Text.
 function rewriteLinks(htmlStr, ids) {
-  return htmlStr.replace(/<a href="(\/[^"]*)">([\s\S]*?)<\/a>/g, (m, href, text) => {
+  return htmlStr.replace(/<a ((?:class="[^"]*" )?)href="(\/[^"]*)"([^>]*)>([\s\S]*?)<\/a>/g, (m, cls, href, rest, text) => {
+    if (href.startsWith('/files/')) return m; // signierte Datei-Links bleiben erhalten
     const d = href.match(/^\/doc\/([A-Za-z0-9_-]+)$/);
-    if (d && ids.has(d[1])) return `<a href="#" data-doc="${d[1]}">${text}</a>`;
+    if (d && ids.has(d[1])) return `<a ${cls}href="#" data-doc="${d[1]}">${text}</a>`;
     return `<span class="md-dead" title="Nicht Teil dieser Freigabe">${text}</span>`;
   });
+}
+
+// Gerenderter Inhalt mit Nachladen von Formeln/Diagrammen
+function Content({ html: h, onClick }) {
+  const ref = { current: null };
+  useEffect(() => { hydrate(ref.current); }, [h]);
+  return html`<div class="md-body" ref=${el => { ref.current = el; }} onClick=${e => { if (!baseSortClick(e)) onClick(e); }} dangerouslySetInnerHTML=${{ __html: h }}></div>`;
 }
 
 function Tree({ data, current, onOpen }) {
@@ -75,7 +84,11 @@ function Viewer({ token, data }) {
   }, []);
   const d = data.docs.find(x => x.id === current);
   useEffect(() => { document.title = `${d ? d.title + ' – ' : ''}${data.title} (geteilt)`; }, [current]);
-  const r = d ? md(d.content) : { html: '', toc: [] };
+  const kidsOf = id => data.docs.filter(x => x.parent === id).sort((a, b) => a.title.localeCompare(b.title, 'de'));
+  const r = d ? md(d.content, {
+    fileUrl: id => (data.files && data.files[id]) || null, embeds: data.embeds !== false, synced: data.synced || {},
+    subpages: kidsOf(d.id).map(k => ({ id: k.id, title: k.title })),
+  }) : { html: '', toc: [] };
   const crumbs = [];
   for (let x = d; x && x.parent; x = data.docs.find(y => y.id === x.parent)) crumbs.unshift(data.docs.find(y => y.id === x.parent));
   const kids = d ? data.docs.filter(x => x.parent === d.id).sort((a, b) => a.title.localeCompare(b.title, 'de')) : [];
@@ -106,14 +119,14 @@ function Viewer({ token, data }) {
                 <div class="doc-meta" style=${{ marginTop: '10px' }}>${d.tags.map(t => html`<span class="tag-chip">#${t}</span>`)}<span class="small muted" style=${{ marginLeft: '5px', fontSize: '12px' }}>Stand ${fmtDate(d.updated)}</span></div></div>
               <div class="doc-body">
                 <div class="doc-main">
-                  <article class="article"><div class="md-body" onClick=${onClick} dangerouslySetInnerHTML=${{ __html: rewriteLinks(r.html, ids) }}></div></article>
+                  <article class="article"><${Content} html=${rewriteLinks(r.html, ids)} onClick=${onClick} /></article>
                   ${kids.length > 0 && html`
                     <div class="section g14"><h2 class="h2 s16">Unterseiten (${kids.length})</h2>
                       <div class="card list">${kids.map(k => html`<button type="button" class="list-row" onClick=${() => open(k.id)}><div class="ficon s30" style=${fcol(162)}><span class="ms">description</span></div><div style=${{ flex: 1, minWidth: 0 }}><div class="t">${k.title}</div></div><div class="d">${fmtDate(k.updated)}</div></button>`)}</div>
                     </div>`}
                 </div>
                 ${r.toc.length > 1 && html`<aside class="toc"><div class="toc-label">AUF DIESER SEITE</div>
-                  ${r.toc.map(h => html`<button type="button" class=${'toc-item' + (h.level === 3 ? ' l3' : '')} onClick=${() => { const el = document.getElementById(h.id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>${h.text}</button>`)}</aside>`}
+                  ${r.toc.map(h => html`<button type="button" class=${'toc-item l' + h.level} onClick=${() => { const el = document.getElementById(h.id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>${h.text}</button>`)}</aside>`}
               </div>`}
             <div class="hint" style=${{ textAlign: 'center', marginTop: '20px' }}>Bereitgestellt mit ${data.appName || 'Rackbook'}</div>
           </div>

@@ -176,8 +176,10 @@ r.post('/docs', editor, (req, res) => {
   res.status(201).json({ doc: toDto(loadDoc(req, id)) });
 });
 
+const lastSnapshot = new Map();
 r.put('/docs/:id', editor, (req, res) => {
   const b = req.body || {};
+  let snapshotted = false;
   const doc = tx(() => {
     const d = loadDoc(req, req.params.id);
     if (b.version !== undefined && Number(b.version) !== d.version) {
@@ -193,13 +195,21 @@ r.put('/docs/:id', editor, (req, res) => {
     };
     Object.assign(next, resolvePlacement(d, b, next.folder));
     if (next.title === d.title && next.folder === d.folder_id && next.parent === (d.parent_id ?? null) && next.tags === d.tags && next.content === d.content) return d;
-    saveRevision(d, req.user.id);
+    // Automatisches Speichern im Editor: höchstens eine Version pro Bearbeitungssitzung (10 Minuten) anlegen.
+    const snap = lastSnapshot.get(d.id);
+    const now = Date.now();
+    if (!(b.autosave && snap && snap.user === req.user.id && now - snap.at < 10 * 60000 && d.updated_by === req.user.id && d.updated_via === 'web')) {
+      saveRevision(d, req.user.id);
+      snapshotted = true;
+      lastSnapshot.set(d.id, { user: req.user.id, at: now });
+      if (lastSnapshot.size > 5000) lastSnapshot.delete(lastSnapshot.keys().next().value);
+    }
     db.prepare(`UPDATE documents SET title = ?, folder_id = ?, parent_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'web'
                 WHERE id = ?`).run(next.title, next.folder, next.parent, next.tags, next.content, Date.now(), req.user.id, d.id);
     if (next.folder !== d.folder_id) moveDocSubtree(d.id, next.folder);
     return loadDoc(req, d.id);
   });
-  audit(req, 'doc.updated', doc.id, { title: doc.title, version: doc.version });
+  if (snapshotted) audit(req, 'doc.updated', doc.id, { title: doc.title, version: doc.version });
   res.json({ doc: toDto(doc) });
 });
 

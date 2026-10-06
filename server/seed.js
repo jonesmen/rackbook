@@ -30,6 +30,7 @@ export const sampleDocs = () => [
 - Gäste → alles intern: **blockiert**
 - Clients → Management: nur aus der Admin-Gruppe
 
+> [!TIP]
 > Änderungen an Regeln immer zuerst hier eintragen, dann umsetzen.
 
 ## Offene Punkte
@@ -139,6 +140,7 @@ Upstream ist Unbound, rekursiv, ohne DoH.`) },
 4. Proxmox-Nodes nacheinander starten
 5. Dienste prüfen: Pi-hole, Traefik, Home Assistant
 
+> [!WARNING]
 > Fehlt das Quorum: §pvecm expected 1§ auf einem Node – nur im Notfall!
 
 ## Checkliste danach

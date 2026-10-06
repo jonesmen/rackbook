@@ -1,25 +1,27 @@
 import { html, render, Component } from '/vendor/preact-htm.js';
 import { api, setCsrf, setUnauthorizedHandler, ApiError } from './api.js';
 import { md, plain, excerpt } from './md.js';
+import { DocEditor, MdView } from './doc-editor.js';
 import {
-  DAY, ACCENTS, DEFAULT_SETTINGS, fcol, wordsOf, fmtWords, fmtDate, download, fileName, docMd, initials, Icon, Toggle, stop,
+  DAY, ACCENTS, DEFAULT_SETTINGS, fcol, wordsOf, fmtWords, fmtDate, download, fileName, docMd, initials, Icon, stop,
 } from './util.js';
 import { AuthScreen, ForcePasswordChange } from './auth-views.js';
 import { SettingsPage, AdminPage } from './settings.js';
 import { ShareDialog } from './share-views.js';
 
 const CHEATS = [
-  { syntax: '## Überschrift', label: 'Überschrift (## bis ####)' },
-  { syntax: '**fett**  *kursiv*  ~~durch~~', label: 'Hervorhebung' },
-  { syntax: '`10.0.20.11`', label: 'Inline-Code, IPs, Pfade' },
+  { syntax: '/', label: 'Im Editor: Menü für alle Blöcke (Überschriften, Medien, Tabellen, Kanban, Diagramme …)' },
+  { syntax: '# ## ###  + Leerzeichen', label: 'Überschrift 1–3 (Kürzel am Zeilenanfang)' },
+  { syntax: '- / 1. / [] / >  + Leerzeichen', label: 'Liste, nummerierte Liste, To-do, Zitat' },
+  { syntax: 'Strg+B / I / E / K', label: 'Fett, kursiv, Inline-Code, Link' },
+  { syntax: '**fett**  *kursiv*  ~~durch~~', label: 'Hervorhebung (Markdown)' },
   { syntax: '```bash\nbefehl\n```', label: 'Code-Block mit Sprache' },
-  { syntax: '- Punkt\n1. Schritt', label: 'Listen' },
   { syntax: '- [ ] Aufgabe', label: 'To-do – erscheint im Dashboard' },
-  { syntax: '| Host | IP |\n|---|---|', label: 'Tabelle' },
-  { syntax: '> Hinweis', label: 'Hinweis-Box' },
-  { syntax: '[Text](https://…)', label: 'Link' },
+  { syntax: '> [!NOTE] Text', label: 'Hinweisblock (NOTE, TIP, IMPORTANT, WARNING, CAUTION)' },
+  { syntax: '$a^2+b^2$', label: 'Formel (LaTeX) im Text' },
+  { syntax: '{{date:2026-01-31}}  {{status:Offen|red}}', label: 'Datum, Uhrzeit, Status' },
   { syntax: '[Proxmox](/doc/<id>)', label: 'Link auf ein anderes Dokument' },
-  { syntax: '---', label: 'Trennlinie' },
+  { syntax: 'Strg+Z / Strg+Umschalt+Z', label: 'Rückgängig / Wiederholen' },
 ];
 
 const UNKNOWN_FOLDER = { id: '', name: 'Ohne Ordner', icon: 'folder', hue: 250 };
@@ -47,7 +49,7 @@ function urlFor(s) {
   switch (s.page) {
     case 'docs': return (s.folder ? '/docs/f/' + encodeURIComponent(s.folder) : '/docs') + tag;
     case 'doc': return '/doc/' + encodeURIComponent(s.docId);
-    case 'edit': return s.draft && s.draft.id ? `/doc/${encodeURIComponent(s.draft.id)}/edit` : '/new' + (s.draft && s.draft.parent ? '?parent=' + encodeURIComponent(s.draft.parent) : '');
+    case 'edit': return s.docId ? `/doc/${encodeURIComponent(s.docId)}/edit` : '/new' + (s.newParent ? '?parent=' + encodeURIComponent(s.newParent) : s.newFolder ? '?folder=' + encodeURIComponent(s.newFolder) : '');
     case 'search': return '/search' + (s.sq ? '?q=' + encodeURIComponent(s.sq) : '');
     case 'notifications': case 'settings': case 'admin': return '/' + s.page;
     default: return '/';
@@ -56,13 +58,14 @@ function urlFor(s) {
 
 class App extends Component {
   mainRef = { current: null };
-  taRef = { current: null };
+  docEditor = null;
+  editSeq = 0;
   fileRef = { current: null };
   state = {
     boot: 'loading', authState: null, user: null, passwordMinLength: 10,
     docs: [], folders: [], meta: { staleDays: 90 }, pendingUsers: 0,
     page: 'dashboard', folder: null, docId: null, q: '', sq: '', tag: null, filterOpen: false, menuId: null,
-    showAllFolders: false, draft: null, draftBase: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
+    showAllFolders: false, synced: {}, editKey: 0, newFolder: null, newParent: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
     userMenu: false, rev: null, saving: false, share: null,
     sbWidth: (() => { try { const w = Number(localStorage.getItem('rackbook.sbWidth')); return w >= 200 && w <= 480 ? w : 248; } catch { return 248; } })(),
     openNodes: (() => {
@@ -135,25 +138,28 @@ class App extends Component {
     this.setState({ boot: 'ready' }, () => this.applyRoute(route, true));
   }
   async loadAll() {
-    const [d, f, m] = await Promise.all([api('/docs'), api('/folders'), api('/meta')]);
+    const [d, f, m, sb] = await Promise.all([api('/docs'), api('/folders'), api('/meta'), api('/synced')]);
     this._loaded = Date.now();
-    this.setState({ docs: d.docs, folders: f.folders, meta: m });
+    this.setState({ docs: d.docs, folders: f.folders, meta: m, synced: Object.fromEntries(sb.blocks.map(x => [x.id, x])) });
     if (this.isAdmin()) api('/admin/users').then(r => this.setState({ pendingUsers: r.users.filter(u => u.status === 'pending').length })).catch(() => {});
   }
   loadMeta() { return api('/meta').then(meta => this.setState({ meta })).catch(() => {}); }
   async refresh() {
     if (this.state.boot !== 'ready' || !this.state.user || this.state.user.mustChangePassword) return;
     try {
-      const [d, f] = await Promise.all([api('/docs'), api('/folders')]);
+      const [d, f, sb] = await Promise.all([api('/docs'), api('/folders'), api('/synced')]);
       this._loaded = Date.now();
-      this.setState({ docs: d.docs, folders: f.folders });
+      // Während der Bearbeitung nichts unter dem Editor austauschen, was gerade gespeichert wird
+      const keep = this.docEditor && this.docEditor.state.id;
+      const docs = keep ? d.docs.map(x => (x.id === keep ? (this.doc(keep) || x) : x)) : d.docs;
+      this.setState({ docs, folders: f.folders, synced: { ...Object.fromEntries(sb.blocks.map(x => [x.id, x])), ...this.pendingSynced() } });
     } catch { /* still */ }
   }
   onFocus = () => { if (Date.now() - (this._loaded || 0) > 30000) this.refresh(); };
   sessionLost() {
     if (this.state.boot !== 'ready') return;
     setCsrf(null);
-    this.setState({ boot: 'auth', user: null, docs: [], draft: null, authState: { ...(this.state.authState || {}), setupRequired: false } });
+    this.setState({ boot: 'auth', user: null, docs: [], authState: { ...(this.state.authState || {}), setupRequired: false } });
   }
   async logout() {
     if (this.isDirty() && !confirm('Ungespeicherte Änderungen verwerfen und abmelden?')) return;
@@ -162,7 +168,7 @@ class App extends Component {
     setCsrf(null);
     if (redirect) { location.assign(redirect); return; }
     history.replaceState(null, '', '/');
-    this.setState({ boot: 'loading', user: null, docs: [], draft: null, userMenu: false });
+    this.setState({ boot: 'loading', user: null, docs: [], userMenu: false });
     this.boot();
   }
 
@@ -222,9 +228,30 @@ class App extends Component {
     this.setState({ openNodes });
   }
   doc(id) { return this.state.docs.find(d => d.id === id); }
-  isDirty() {
-    const { draft, draftBase, page } = this.state;
-    return page === 'edit' && draft && draftBase && ['title', 'folder', 'parent', 'tags', 'content'].some(k => draft[k] !== draftBase[k]);
+  isDirty() { return !!(this.docEditor && this.docEditor.isPending()); }
+
+  // ---------- Synchronisierte Blöcke ----------
+  setSynced(block) { this.setState(s => ({ synced: { ...s.synced, [block.id]: block } })); }
+  syncedUsage(ref) { return this.state.docs.filter(d => d.content.includes(ref)).length; }
+  pendingSynced() { return Object.fromEntries(Object.keys(this._syncT || {}).map(ref => [ref, this.state.synced[ref]]).filter(([, v]) => v)); }
+  saveSynced(ref, content) {
+    const cur = this.state.synced[ref];
+    if (!cur || cur.content === content) return;
+    this.setSynced({ ...cur, content });
+    this._syncT = this._syncT || {};
+    clearTimeout(this._syncT[ref]);
+    this._syncT[ref] = setTimeout(async () => {
+      try { const r = await api('/synced/' + encodeURIComponent(ref), { method: 'PUT', body: { content: this.state.synced[ref].content } }); delete this._syncT[ref]; this.setSynced({ ...r.block, content: this.state.synced[ref].content }); } catch (e) { delete this._syncT[ref]; this.fail(e); }
+    }, 800);
+  }
+  // Kontext für die Lese-Darstellung
+  renderCtx(docId, interactive) {
+    const e = this.state.meta.editor || {};
+    return {
+      interactive: !!interactive, embeds: e.embeds !== false,
+      synced: Object.fromEntries(Object.values(this.state.synced).map(x => [x.id, x.content])),
+      subpages: docId ? this.docChildren(docId).map(k => ({ id: k.id, title: k.title })) : [],
+    };
   }
   flash(msg, undoDocId, isErr) {
     clearTimeout(this._t);
@@ -247,8 +274,16 @@ class App extends Component {
 
   // ---------- Navigation ----------
   go(page, extra, replace, force) {
-    if (!force && this.state.page === 'edit' && page !== 'edit' && this.isDirty() && !confirm('Ungespeicherte Änderungen verwerfen?')) return false;
-    const next = Object.assign({ page, menuId: null, filterOpen: false, userMenu: false }, page !== 'edit' ? { draft: null, draftBase: null } : {}, extra || {});
+    // Beim Verlassen des Editors erst speichern
+    if (!force && this.state.page === 'edit' && this.isDirty()) {
+      this.docEditor.flushNow().then(ok => { if (ok || confirm('Die Änderungen konnten nicht gespeichert werden. Trotzdem verlassen?')) this.go(page, extra, replace, true); });
+      return false;
+    }
+    // Einstellung „Dokumente öffnen in: Bearbeiten“
+    if (page === 'doc' && !(extra && extra.read) && extra && extra.docId && this.canEdit() && this.settings().openMode === 'edit' && this.doc(extra.docId)) {
+      return this.go('edit', { docId: extra.docId, newFolder: null, newParent: null, editKey: ++this.editSeq }, replace, force);
+    }
+    const next = Object.assign({ page, menuId: null, filterOpen: false, userMenu: false }, extra || {});
     this.setState(next, () => {
       const url = urlFor(this.state);
       if (url !== location.pathname + location.search) history[replace ? 'replaceState' : 'pushState'](null, '', url);
@@ -267,11 +302,12 @@ class App extends Component {
   }
   onPop = () => {
     if (this.state.boot !== 'ready') return;
-    if (this.isDirty() && !confirm('Ungespeicherte Änderungen verwerfen?')) {
-      history.pushState(null, '', urlFor(this.state));
+    if (this.isDirty()) {
+      const target = parseUrl();
+      this.docEditor.flushNow().then(ok => { if (ok || confirm('Die Änderungen konnten nicht gespeichert werden. Trotzdem verlassen?')) this.applyRoute(target, true); else history.pushState(null, '', urlFor(this.state)); });
       return;
     }
-    this.setState({ draftBase: null, draft: null }, () => this.applyRoute(parseUrl(), true));
+    this.applyRoute(parseUrl(), true);
   };
   onBeforeUnload = e => { if (this.isDirty()) { e.preventDefault(); e.returnValue = ''; } };
   onKey = e => {
@@ -281,42 +317,19 @@ class App extends Component {
       if (this.state.helpOpen) return this.setState({ helpOpen: false });
       if (this.state.menuId || this.state.filterOpen || this.state.userMenu) this.setState({ menuId: null, filterOpen: false, userMenu: false });
     }
-    if (this.state.page === 'edit' && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); this.save(); }
+    if (this.state.page === 'edit' && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (this.docEditor) this.docEditor.flushNow(); }
   };
 
   // ---------- Dokumentaktionen ----------
   openEditor(d, folder, replace, parent) {
-    const first = this.state.folders[0] ? this.state.folders[0].id : '';
-    const p = parent && this.doc(parent);
-    const draft = d
-      ? { id: d.id, version: d.version, title: d.title, folder: d.folder, parent: d.parent || '', tags: d.tags.join(', '), content: d.content }
-      : { id: null, title: '', folder: p ? p.folder : ((folder && this.state.folders.some(f => f.id === folder)) ? folder : (this.state.folder || first)), parent: p ? p.id : '', tags: p ? p.tags.join(', ') : '', content: '## Übersicht\n\n' };
-    this.go('edit', { draft, draftBase: { ...draft } }, replace);
+    this.go('edit', { docId: d ? d.id : null, newFolder: d ? null : (folder || this.state.folder || null), newParent: d ? null : (parent || null), editKey: ++this.editSeq }, replace);
   }
-  async save(force) {
-    const dr = this.state.draft;
-    if (!dr || this.state.saving) return;
-    this.setState({ saving: true });
-    const body = { title: dr.title, folder: dr.folder, parent: dr.parent || '', tags: dr.tags, content: dr.content };
-    try {
-      const r = dr.id
-        ? await api('/docs/' + encodeURIComponent(dr.id), { method: 'PUT', body: { ...body, version: force ? undefined : dr.version } })
-        : await api('/docs', { method: 'POST', body });
-      this.upsertDoc(r.doc);
-      if (dr.id) await this.refresh(); // Unterseiten können mitgewandert sein
-      this.setState({ saving: false });
-      this.go('doc', { docId: r.doc.id }, true, true);
-      this.flash('Gespeichert');
-    } catch (e) {
-      this.setState({ saving: false });
-      if (e.status === 409 && e.data.doc) {
-        const other = e.data.doc;
-        this.upsertDoc(other);
-        if (confirm(`„${other.title}“ wurde inzwischen von ${other.updatedBy || 'jemand anderem'} geändert (${fmtDate(other.updated)}).\n\nOK = deine Version trotzdem speichern (überschreibt die Änderungen)\nAbbrechen = weiter bearbeiten`)) this.save(true);
-        return;
-      }
-      this.fail(e);
-    }
+  // Umschalter Lesen/Bearbeiten
+  setMode(d, mode) {
+    if (mode === 'edit') { if (this.state.page !== 'edit') this.openEditor(d, null, true); return; }
+    if (this.state.page !== 'edit') return;
+    const id = (this.docEditor && this.docEditor.state.id) || (d && d.id);
+    if (id) this.go('doc', { docId: id, read: true }, true); else this.go(this.state.folder ? 'docs' : 'dashboard');
   }
   async togglePin(d) {
     try { const r = await api(`/docs/${encodeURIComponent(d.id)}/pin`, { method: 'POST', body: { pinned: !d.pinned } }); this.upsertDoc(r.doc); this.flash(d.pinned ? 'Nicht mehr angepinnt' : 'Auf dem Dashboard angepinnt'); } catch (e) { this.fail(e); }
@@ -432,22 +445,6 @@ class App extends Component {
     try { await api('/admin/sample-data', { method: 'POST', body: {} }); await this.loadAll(); this.flash('Beispieldaten wiederhergestellt'); } catch (e) { this.fail(e); }
   }
 
-  // ---------- Editor ----------
-  setDraft(patch) { this.setState({ draft: Object.assign({}, this.state.draft, patch) }); }
-  insert(before, after, ph, linePrefix) {
-    const ta = this.taRef.current, dr = this.state.draft; if (!ta || !dr) return;
-    const v = dr.content, s = ta.selectionStart, e = ta.selectionEnd;
-    let nv, cs, ce;
-    if (linePrefix) {
-      const ls = v.lastIndexOf('\n', s - 1) + 1;
-      nv = v.slice(0, ls) + before + v.slice(ls); cs = s + before.length; ce = e + before.length;
-    } else {
-      const sel = v.slice(s, e) || ph || '';
-      nv = v.slice(0, s) + before + sel + (after || '') + v.slice(e); cs = s + before.length; ce = cs + sel.length;
-    }
-    this.setState({ draft: Object.assign({}, dr, { content: nv }) }, () => { ta.focus(); ta.setSelectionRange(cs, ce); });
-  }
-
   // Klicks im gerenderten Markdown: Aufgaben abhaken, Code kopieren, interne Links.
   onArticleClick = (e, d) => {
     const t = e.target;
@@ -510,8 +507,7 @@ class App extends Component {
           <div class="container">
             ${s.page === 'dashboard' && this.renderDashboard()}
             ${s.page === 'docs' && this.renderDocs()}
-            ${s.page === 'doc' && this.renderDoc()}
-            ${s.page === 'edit' && s.draft && this.renderEditor(st)}
+            ${(s.page === 'doc' || s.page === 'edit') && this.renderDoc(s.page === 'edit')}
             ${s.page === 'search' && this.renderSearch()}
             ${s.page === 'notifications' && this.renderNotifications(staleDocs, touched)}
             ${s.page === 'settings' && html`<${SettingsPage} app=${this} />`}
@@ -625,7 +621,7 @@ class App extends Component {
   // Seitenbaum links: Ordner → Unterordner → Dokumente → Unterseiten (jede Ebene aufklappbar)
   renderFolderTree(expanded) {
     const s = this.state;
-    const curDoc = (s.page === 'doc' || s.page === 'edit') && this.doc(s.page === 'doc' ? s.docId : s.draft && s.draft.id);
+    const curDoc = (s.page === 'doc' || s.page === 'edit') && this.doc(s.docId);
     const curFolder = s.page === 'docs' ? s.folder : curDoc ? curDoc.folder : null;
     // Pfad zum aktuellen Ordner/Dokument automatisch aufklappen (solange nicht ausdrücklich zugeklappt)
     const auto = new Set(curFolder ? this.folderChain(curFolder).map(f => f.id) : []);
@@ -855,39 +851,56 @@ class App extends Component {
     if (confirm(`„${d.title}“${n ? ` und ${n} ${n === 1 ? 'Unterseite' : 'Unterseiten'}` : ''} in den Papierkorb verschieben?`)) this.removeDoc(d);
   }
 
-  // ---------- Dokumentansicht ----------
-  renderDoc() {
+  // ---------- Dokumentansicht (Lesen / Bearbeiten) ----------
+  modeSwitch(d, edit) {
+    if (!this.canEdit()) return null;
+    return html`<div class="mode-seg" role="group" aria-label="Ansicht">
+      <button type="button" class=${edit ? 'on' : ''} aria-pressed=${edit} onClick=${() => this.setMode(d, 'edit')}>Bearbeiten</button>
+      <button type="button" class=${!edit ? 'on' : ''} aria-pressed=${!edit} disabled=${edit && !d && !(this.docEditor && this.docEditor.state.id)} onClick=${() => this.setMode(d, 'read')}>Lesen</button>
+    </div>`;
+  }
+  renderDoc(edit) {
     const s = this.state;
-    const d = this.doc(s.docId);
-    if (!d) {
+    const d = s.docId ? this.doc(s.docId) : null;
+    if (!d && !(edit && !s.docId)) {
       return html`<div class="page g18"><div class="card empty-big"><div class="t">Dokument nicht gefunden</div><div class="s">Es wurde gelöscht oder du hast einen ungültigen Link geöffnet.</div>
         <div style=${{ marginTop: '14px' }}><button type="button" class="btn btn-ghost md" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Zu den Dokumenten</button></div></div></div>`;
     }
     const canEdit = this.canEdit();
-    const f = this.F(d.folder), c = fcol(f.hue);
-    const r = md(d.content, { interactive: canEdit });
+    const folderId = d ? d.folder : ((s.newParent && this.doc(s.newParent)) ? this.doc(s.newParent).folder : (s.newFolder || (s.folders[0] && s.folders[0].id)));
+    const f = this.F(folderId), c = fcol(f.hue);
+    const fchain = this.folderChain(folderId);
+    const dchain = d ? this.docChain(d) : (s.newParent && this.doc(s.newParent) ? [...this.docChain(this.doc(s.newParent)), this.doc(s.newParent)] : []);
+    const crumbs = html`
+      <div class="row-between">
+        <div class="crumbs">
+          <button type="button" class="c" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Dokumente</button><span class="ms">chevron_right</span>
+          ${(fchain.length ? fchain : [f]).map(x => html`<button type="button" class="c" onClick=${() => this.go('docs', { folder: x.id, tag: null, q: '' })}>${x.name}</button><span class="ms">chevron_right</span>`)}
+          ${dchain.map(x => html`<button type="button" class="c" onClick=${() => this.go('doc', { docId: x.id })}>${x.title}</button><span class="ms">chevron_right</span>`)}
+          <span class="cur">${d ? d.title : 'Neue Seite'}</span>
+        </div>
+        <div class="row g8">${this.modeSwitch(d, edit)}${this.headIcons()}</div>
+      </div>`;
+    if (edit) {
+      return html`
+        <div class="page g14" data-screen-label="Editor">
+          ${crumbs}
+          <${DocEditor} key=${'e' + s.editKey} app=${this} doc=${d} folder=${s.newFolder} parent=${s.newParent} />
+        </div>`;
+    }
+    const r = md(d.content, this.renderCtx(d.id, canEdit));
     const openFolder = () => this.go('docs', { folder: d.folder, tag: null, q: '' });
-    const fchain = this.folderChain(d.folder);
-    const dchain = this.docChain(d);
     const kids = this.docChildren(d.id);
     return html`
       <div class="page g18" data-screen-label="Dokument">
-        <div class="row-between">
-          <div class="crumbs">
-            <button type="button" class="c" onClick=${() => this.go('docs', { folder: null, tag: null, q: '' })}>Dokumente</button><span class="ms">chevron_right</span>
-            ${(fchain.length ? fchain : [f]).map(x => html`<button type="button" class="c" onClick=${() => this.go('docs', { folder: x.id, tag: null, q: '' })}>${x.name}</button><span class="ms">chevron_right</span>`)}
-            ${dchain.map(x => html`<button type="button" class="c" onClick=${() => this.go('doc', { docId: x.id })}>${x.title}</button><span class="ms">chevron_right</span>`)}
-            <span class="cur">${d.title}</span>
-          </div>
-          ${this.headIcons()}
-        </div>
+        ${crumbs}
         <div class="doc-head">
           <div class="left">
             <h1 class="doc-title">${d.title}</h1>
             <div class="doc-meta">
               <button type="button" class="folder-chip" style=${{ background: c.background }} onClick=${openFolder}><span class="ms" style=${{ color: c.color }}>${f.icon}</span>${f.name}</button>
               ${d.tags.map(t => html`<button type="button" class="tag-chip" onClick=${() => this.go('docs', { folder: null, tag: t, q: '' })}>#${t}</button>`)}
-              <span class="small muted" style=${{ marginLeft: '5px', fontSize: '12px' }}>Geändert ${fmtDate(d.updated)}${d.updatedBy ? ` von ${d.updatedBy}` : ''} · ${fmtWords(wordsOf(d.content))}</span>
+              <span class="small muted" style=${{ marginLeft: '5px', fontSize: '12px' }}>${d.createdBy ? `Von ${d.createdBy} · ` : ''}Geändert ${fmtDate(d.updated)}${d.updatedBy ? ` von ${d.updatedBy}` : ''} · ${fmtWords(wordsOf(plain(d.content)))}</span>
               ${d.updatedVia === 'mcp' && html`<span class="pill editor" title="Zuletzt von einem KI-Assistenten über MCP geändert"><span class="ms s15">smart_toy</span>KI</span>`}
             </div>
           </div>
@@ -897,15 +910,15 @@ class App extends Component {
             ${this.canShareItem(d) && html`<button type="button" class="sq-btn" title="Teilen per Link" onClick=${() => this.openShare('doc', d)}><span class="ms">share</span></button>`}
             <button type="button" class="sq-btn" title="Versionsverlauf" onClick=${() => this.openRevisions(d)}><span class="ms">history</span></button>
             <button type="button" class="sq-btn" title="Als .md herunterladen" onClick=${() => download(fileName(d), docMd(d))}><span class="ms">download</span></button>
+            <button type="button" class="sq-btn" title="Drucken / als PDF speichern" onClick=${() => window.print()}><span class="ms">print</span></button>
             ${canEdit && html`<button type="button" class="sq-btn" title="Unterseite anlegen" onClick=${() => this.openEditor(null, d.folder, false, d.id)}><span class="ms">note_add</span></button>`}
             ${canEdit && html`<button type="button" class="sq-btn" title="Löschen" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span></button>`}
-            ${canEdit && html`<button type="button" class="btn btn-primary edit" onClick=${() => this.openEditor(d)}><span class="ms">edit</span>Bearbeiten</button>`}
           </div>
         </div>
         <div class="doc-body">
           <div class="doc-main">
             <article class="article">
-              <div class="md-body" onClick=${e => this.onArticleClick(e, d)} onKeyDown=${e => this.onArticleKey(e, d)} dangerouslySetInnerHTML=${{ __html: r.html }}></div>
+              <${MdView} html=${r.html} onClick=${e => this.onArticleClick(e, d)} onKeyDown=${e => this.onArticleKey(e, d)} />
             </article>
             ${(kids.length > 0 || canEdit) && html`
               <div class="section g14 subpages">
@@ -928,88 +941,9 @@ class App extends Component {
           ${r.toc.length > 1 && html`
             <aside class="toc">
               <div class="toc-label">AUF DIESER SEITE</div>
-              ${r.toc.map(h => html`<button type="button" class=${'toc-item' + (h.level === 3 ? ' l3' : '')} onClick=${() => this.scrollToEl(document.getElementById(h.id))}>${h.text}</button>`)}
+              ${r.toc.map(h => html`<button type="button" class=${'toc-item l' + h.level} onClick=${() => this.scrollToEl(document.getElementById(h.id))}>${h.text}</button>`)}
             </aside>`}
         </div>
-      </div>`;
-  }
-
-  // ---------- Editor ----------
-  renderEditor(st) {
-    const s = this.state, dr = s.draft;
-    const showPreview = st.livePreview;
-    const tools = [
-      ['title', 'Überschrift', () => this.insert('## ', '', '', true)],
-      ['format_bold', 'Fett', () => this.insert('**', '**', 'fett')],
-      ['format_italic', 'Kursiv', () => this.insert('*', '*', 'kursiv')],
-      ['code', 'Inline-Code', () => this.insert('`', '`', 'code')],
-      ['data_object', 'Code-Block', () => this.insert('\n```bash\n', '\n```\n', 'befehl')],
-      ['format_list_bulleted', 'Liste', () => this.insert('- ', '', '', true)],
-      ['format_list_numbered', 'Nummerierte Liste', () => this.insert('1. ', '', '', true)],
-      ['checklist', 'Aufgabe', () => this.insert('- [ ] ', '', '', true)],
-      ['link', 'Link', () => this.insert('[', '](https://)', 'Linktext')],
-      ['table', 'Tabelle', () => this.insert('\n| Host | IP | Rolle |\n|---|---|---|\n| ', ' | 10.0.20.x | |\n', 'name')],
-      ['format_quote', 'Hinweis', () => this.insert('> ', '', '', true)],
-      ['horizontal_rule', 'Trennlinie', () => this.insert('\n---\n', '', '')],
-    ];
-    const cancel = () => (dr.id ? this.go('doc', { docId: dr.id }) : this.go(s.folder ? 'docs' : 'dashboard'));
-    return html`
-      <div class="page g15" data-screen-label="Editor">
-        <div class="crumbs">
-          <button type="button" class="c" style=${{ display: 'flex', alignItems: 'center', gap: '4px' }} onClick=${cancel}><span class="ms">arrow_back</span>Zurück</button>
-          <span style=${{ margin: '0 5px', color: '#d1d5db' }}>|</span>
-          <span>${dr.id ? 'Dokument bearbeiten' : 'Neues Dokument'}</span>
-          ${this.isDirty() && html`<span class="pill warn" style=${{ marginLeft: '8px' }}>Ungespeichert</span>`}
-        </div>
-        <div class="toolbar">
-          <input class="title-input" value=${dr.title} onInput=${e => this.setDraft({ title: e.target.value })} placeholder="Titel des Dokuments" maxlength="200" aria-label="Titel" />
-          <button type="button" class="btn btn-ghost cancel" onClick=${cancel}>Abbrechen</button>
-          <button type="button" class="btn btn-primary save" disabled=${s.saving} onClick=${() => this.save()}><span class="ms s16">check</span>${s.saving ? 'Speichert …' : 'Speichern'}</button>
-        </div>
-        <div style=${{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <label class="field-chip" title=${dr.parent ? 'Unterseiten liegen im Ordner ihrer Elternseite' : 'Ordner'}><span class="ms">folder</span>
-            <select value=${dr.folder} disabled=${!!dr.parent} onChange=${e => {
-              const folder = e.target.value;
-              const p = dr.parent && this.doc(dr.parent);
-              this.setDraft({ folder, parent: p && p.folder === folder ? dr.parent : '' });
-            }} aria-label="Ordner">
-              ${this.folderTreeList().map(({ f, depth }) => html`<option value=${f.id}>${'\u00a0\u00a0\u00a0'.repeat(depth)}${depth ? '└ ' : ''}${f.name}</option>`)}
-            </select>
-          </label>
-          <label class="field-chip"><span class="ms">account_tree</span>
-            <select value=${dr.parent || ''} onChange=${e => {
-              const parent = e.target.value;
-              const p = parent && this.doc(parent);
-              this.setDraft({ parent, folder: p ? p.folder : dr.folder });
-            }} aria-label="Übergeordnete Seite">
-              <option value="">Oberste Ebene (keine Elternseite)</option>
-              ${this.docTreeList(dr.folder, dr.id ? [dr.id, ...this.docDescendantIds(dr.id)] : []).map(({ d: x, depth }) => html`<option value=${x.id}>${'\u00a0\u00a0\u00a0'.repeat(depth)}${depth ? '└ ' : ''}Unterseite von: ${x.title}</option>`)}
-            </select>
-          </label>
-          <label class="field-chip tags"><span class="ms">sell</span>
-            <input value=${dr.tags} onInput=${e => this.setDraft({ tags: e.target.value })} placeholder="Tags, kommagetrennt" aria-label="Tags" />
-          </label>
-        </div>
-        <div class="editor-card">
-          <div class="editor-tools">
-            ${tools.map(([icon, label, run]) => html`<button type="button" class="ms tool" title=${label} aria-label=${label} onClick=${run}>${icon}</button>`)}
-            <div class="spacer"></div>
-            <span style=${{ fontSize: '11.5px', color: 'var(--muted)', marginRight: '11px' }}>${fmtWords(wordsOf(dr.content))}</span>
-            <button type="button" class="toggle-wrap" role="switch" aria-checked=${showPreview} onClick=${() => this.setSettings({ livePreview: !showPreview })}>Vorschau<${Toggle} on=${showPreview} /></button>
-          </div>
-          <div class=${'editor-grid' + (showPreview ? ' split' : '')}>
-            <textarea class="editor-ta" ref=${this.taRef} value=${dr.content} spellcheck="false" aria-label="Inhalt (Markdown)"
-              style=${{ fontSize: (st.fontSize || 14) + 'px', whiteSpace: st.wrap ? 'pre-wrap' : 'pre' }}
-              placeholder=${'## Überschrift\n\nSchreibe hier in Markdown …'}
-              onInput=${e => this.setDraft({ content: e.target.value })}
-              onKeyDown=${e => {
-                if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); e.stopPropagation(); this.save(); }
-                else if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); this.insert('  ', '', ''); }
-              }}></textarea>
-            ${showPreview && html`<div class="editor-preview"><div class="md-body" dangerouslySetInnerHTML=${{ __html: md(dr.content).html }}></div></div>`}
-          </div>
-        </div>
-        <div class="hint">Tipp: <span class="mono">Strg/⌘ + S</span> speichert.</div>
       </div>`;
   }
 
@@ -1116,7 +1050,7 @@ class App extends Component {
                 <div style=${{ fontWeight: 600 }}>${sel.title}</div>
                 ${sel.id !== null && this.canEdit() && html`<button type="button" class="btn btn-primary sm" onClick=${() => this.restoreRevision(d, sel)}><span class="ms s16">restore</span>Diese Version wiederherstellen</button>`}
               </div>
-              <div class="md-body" dangerouslySetInnerHTML=${{ __html: md(sel.content).html }}></div>
+              <${MdView} html=${md(sel.content, this.renderCtx(d.id)).html} />
             </div>
           </div>
         </div>

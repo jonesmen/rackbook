@@ -164,6 +164,29 @@ const MIGRATIONS = [
   CREATE INDEX shares_user ON shares(user_id);
   CREATE INDEX shares_target ON shares(kind, target_id);
   `,
+  // 6: Dateien (Bilder, Videos, PDFs, Anhänge) und synchronisierte Blöcke
+  `
+  CREATE TABLE files (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    doc_id TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX files_doc ON files(doc_id);
+  CREATE TABLE synced_blocks (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function migrate() {

@@ -1,5 +1,6 @@
 // Leichtgewichtiger MCP-Server (Model Context Protocol, Streamable HTTP, zustandslos).
 // KI-Assistenten (Claude, ChatGPT, Cursor …) können darüber Dokumentation lesen und pflegen.
+import { getSynced, syncedRefs } from './synced.js';
 import { db, tx, getSetting, setSetting } from './db.js';
 import { config } from './config.js';
 import { HttpError, randomToken, sha256, RateLimiter } from './security.js';
@@ -232,15 +233,25 @@ ${folders || '- (keine Ordner freigegeben)'}
 7. **Keine Geheimnisse speichern**: keine Passwörter, API-Keys, Tokens oder privaten Schlüssel. Stattdessen auf den Ablageort verweisen (z. B. „Passwort in Vaultwarden unter *Dienst / Admin*“).
 8. Jede Änderung wird versioniert und ist für Menschen nachvollziehbar. Erfinde keine Fakten – nur dokumentieren, was der Benutzer gesagt hat oder was du verifiziert hast. Unklares als offene Aufgabe (\`- [ ]\`) festhalten.
 
-## Unterstütztes Markdown
-- Überschriften \`##\` bis \`####\` (kein \`#\` im Inhalt – der Titel ist separat). \`##\`/\`###\` bilden das Inhaltsverzeichnis.
-- **fett**, *kursiv*, ~~durchgestrichen~~, \`Inline-Code\` für IPs, Hostnamen, Pfade, Ports
+## Unterstütztes Markdown (Rackbook-Editor)
+Der Inhalt ist Markdown; im Web-Editor erscheint jeder Absatz als Block. Verwende nur die folgenden Formen:
+- Überschriften \`##\` bis \`####\` (\`#\` nur in Ausnahmefällen – der Titel ist separat). \`##\`/\`###\` bilden das Inhaltsverzeichnis.
+- **fett**, *kursiv*, ~~durchgestrichen~~, \`Inline-Code\` für IPs, Hostnamen, Pfade, Ports. Harter Zeilenumbruch: \`\\\` am Zeilenende.
 - Code-Blöcke mit Sprache: \`\`\`bash, \`\`\`yaml, \`\`\`ini …
 - Listen (\`-\`, \`1.\`), Tabellen (\`| a | b |\` mit Trennzeile \`|---|---|\`)
-- Hinweis-Box: Zeile mit \`>\` beginnen
+- Zitat: Zeile mit \`>\`. **Hinweisblock:** erste Zeile \`> [!NOTE]\` (auch \`[!TIP]\`, \`[!IMPORTANT]\`, \`[!WARNING]\`, \`[!CAUTION]\`), danach \`> Text\`
 - Aufgaben: \`- [ ] offen\` / \`- [x] erledigt\` – offene Aufgaben erscheinen auf dem Dashboard
 - Links: \`[Text](https://…)\`, Verweis auf andere Dokumente: \`[Titel](/doc/<id>)\` – Unterseiten werden unter der Elternseite automatisch aufgelistet
-- Keine Bilder, kein HTML.
+- Aufklappbar: \`:::toggle Titel\` … \`:::\` · Spalten: \`:::columns\` mit 2–5 Blöcken \`:::column\` … \`:::\`, abgeschlossen mit \`:::\`
+- Diagramme als Text: \`\`\`mermaid (z. B. \`graph LR\` für Netzwerkpläne, \`sequenceDiagram\` für Abläufe) – bevorzugt für Topologien
+- Formeln: \`$…$\` im Text, \`\`\`math für Blöcke (LaTeX)
+- Inline: Datum \`{{date:2026-01-31}}\`, Uhrzeit \`{{time:14:30}}\`, Status \`{{status:In Arbeit|blue}}\` (Farben: gray, blue, green, yellow, orange, red, purple)
+- Fußnoten: \`[^1]\` im Text und am Ende \`[^1]: Erläuterung\`
+- Trennlinie \`---\`, Seitenumbruch für den Druck \`::pagebreak\`, Liste der Unterseiten \`::subpages\`
+- Kanban-Board: \`\`\`kanban mit JSON \`{"columns":[{"title":"Offen","color":"gray","cards":[{"title":"…","note":"…"}]}]}\`
+- Einbettung (nur wenn der Benutzer es wünscht): \`::embed {"url":"https://…"}\` (YouTube, Vimeo, Loom, Figma, Miro, Airtable, Typeform, Google Drive/Sheets, beliebige https-Seite)
+- Nicht verändern oder neu erfinden: Zeilen mit \`::image\`/\`![…](/files/…)\`, \`::video\`, \`::audio\`, \`::pdf\`, \`::file\`, \`::drawio\`, \`::excalidraw\`, \`::synced\` sowie \`\`\`base-Blöcke – sie verweisen auf hochgeladene Dateien, Zeichnungen bzw. synchronisierte Inhalte. Beim Umschreiben eines Dokuments unverändert übernehmen.
+- Kein HTML.
 
 ## Empfohlene Struktur
 **Dienst/Anwendung:** Kurzbeschreibung (1–2 Sätze) → \`## Zugriff\` (URL, Host, Port) → \`## Installation\` / \`## Konfiguration\` (Code-Blöcke) → \`## Abhängigkeiten\` → \`## Wartung & Updates\` → \`## Offene Punkte\` (Aufgaben).
@@ -319,11 +330,13 @@ const TOOLS = [
       const d = loadDoc(ctx, a.id);
       const m = meta(d);
       const kids = children(d.id);
+      const synced = getSynced(syncedRefs(d.content));
       const crumbs = docAncestors(d.id).reverse().map(id => `${docTitle(id)} (\`${id}\`)`).join(' › ');
       return {
         text: `# ${d.title}\nID: ${d.id} · Ordner: ${m.folderPath} (\`${d.folder_id}\`)${crumbs ? ` · Elternseiten: ${crumbs}` : ''} · Tags: ${m.tags.join(', ') || '–'} · Version: ${d.version} · Geändert: ${m.updatedAt}${m.updatedBy ? ' von ' + m.updatedBy : ''}`
-          + `${kids.length ? `\nUnterseiten: ${kids.map(k => `${k.title} (\`${k.id}\`)`).join(', ')}` : ''}\n\n${d.content}`,
-        structured: { ...m, content: d.content, children: kids },
+          + `${kids.length ? `\nUnterseiten: ${kids.map(k => `${k.title} (\`${k.id}\`)`).join(', ')}` : ''}\n\n${d.content}`
+          + (Object.keys(synced).length ? `\n\n---\nInhalt der eingebundenen synchronisierten Blöcke (nur lesen, nicht in das Dokument kopieren):\n${Object.entries(synced).map(([id, c]) => `[${id}]\n${c}`).join('\n\n')}` : ''),
+        structured: { ...m, content: d.content, children: kids, synced },
       };
     },
   },
