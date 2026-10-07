@@ -2,6 +2,9 @@ import { html, render, Component } from '/vendor/preact-htm.js';
 import { api, setCsrf, setUnauthorizedHandler, ApiError } from './api.js';
 import { md, plain, excerpt } from './md.js';
 import { DocEditor, MdView } from './doc-editor.js';
+import { CommandPalette } from './palette.js';
+import { TemplatePicker, applyPlaceholders } from './templates-views.js';
+import { InventoryPage } from './inventory.js';
 import {
   DAY, ACCENTS, DEFAULT_SETTINGS, fcol, wordsOf, fmtWords, fmtDate, download, fileName, docMd, initials, Icon, stop,
 } from './util.js';
@@ -42,6 +45,9 @@ function parseUrl() {
   if (p === '/notifications') return { page: 'notifications' };
   if (p === '/settings') return { page: 'settings' };
   if (p === '/admin') return { page: 'admin' };
+  if (p === '/inventory') return { page: 'inventory', assetId: null, invTab: 'list' };
+  if (p === '/inventory/ips') return { page: 'inventory', assetId: null, invTab: 'ips' };
+  if ((m = p.match(/^\/inventory\/([^/]+)$/))) return { page: 'inventory', assetId: decodeURIComponent(m[1]), newKind: qs.get('kind'), newAssetParent: qs.get('parent') };
   return { page: 'dashboard' };
 }
 function urlFor(s) {
@@ -52,6 +58,7 @@ function urlFor(s) {
     case 'edit': return s.docId ? `/doc/${encodeURIComponent(s.docId)}/edit` : '/new' + (s.newParent ? '?parent=' + encodeURIComponent(s.newParent) : s.newFolder ? '?folder=' + encodeURIComponent(s.newFolder) : '');
     case 'search': return '/search' + (s.sq ? '?q=' + encodeURIComponent(s.sq) : '');
     case 'notifications': case 'settings': case 'admin': return '/' + s.page;
+    case 'inventory': return s.assetId ? '/inventory/' + encodeURIComponent(s.assetId) + (s.assetId === 'new' && (s.newKind || s.newAssetParent) ? '?' + new URLSearchParams(Object.entries({ kind: s.newKind, parent: s.newAssetParent }).filter(([, v]) => v)).toString() : '') : (s.invTab === 'ips' ? '/inventory/ips' : '/inventory');
     default: return '/';
   }
 }
@@ -65,7 +72,7 @@ class App extends Component {
     boot: 'loading', authState: null, user: null, passwordMinLength: 10,
     docs: [], folders: [], meta: { staleDays: 90 }, pendingUsers: 0,
     page: 'dashboard', folder: null, docId: null, q: '', sq: '', tag: null, filterOpen: false, menuId: null,
-    showAllFolders: false, synced: {}, editKey: 0, newFolder: null, newParent: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
+    showAllFolders: false, synced: {}, assets: [], templates: [], palette: false, tplPick: null, newTemplate: null, assetId: null, invTab: 'list', newKind: null, newAssetParent: null, editKey: 0, newFolder: null, newParent: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
     userMenu: false, rev: null, saving: false, share: null,
     sbWidth: (() => { try { const w = Number(localStorage.getItem('rackbook.sbWidth')); return w >= 200 && w <= 480 ? w : 248; } catch { return 248; } })(),
     // Seitenbaum: beim Aufruf zugeklappt, nur der Pfad zur aktuellen Seite wird geöffnet
@@ -136,21 +143,23 @@ class App extends Component {
     this.setState({ boot: 'ready' }, () => this.applyRoute(route, true));
   }
   async loadAll() {
-    const [d, f, m, sb] = await Promise.all([api('/docs'), api('/folders'), api('/meta'), api('/synced')]);
+    const [d, f, m, sb, as, tp] = await Promise.all([api('/docs'), api('/folders'), api('/meta'), api('/synced'), api('/assets'), api('/templates')]);
     this._loaded = Date.now();
-    this.setState({ docs: d.docs, folders: f.folders, meta: m, synced: Object.fromEntries(sb.blocks.map(x => [x.id, x])) });
+    this.setState({ docs: d.docs, folders: f.folders, meta: m, synced: Object.fromEntries(sb.blocks.map(x => [x.id, x])), assets: as.assets, templates: tp.templates });
     if (this.isAdmin()) api('/admin/users').then(r => this.setState({ pendingUsers: r.users.filter(u => u.status === 'pending').length })).catch(() => {});
   }
+  async loadAssets() { try { const r = await api('/assets'); this.setState({ assets: r.assets }); } catch (e) { this.fail(e); } }
+  async loadTemplates() { try { const r = await api('/templates'); this.setState({ templates: r.templates }); } catch (e) { this.fail(e); } }
   loadMeta() { return api('/meta').then(meta => this.setState({ meta })).catch(() => {}); }
   async refresh() {
     if (this.state.boot !== 'ready' || !this.state.user || this.state.user.mustChangePassword) return;
     try {
-      const [d, f, sb] = await Promise.all([api('/docs'), api('/folders'), api('/synced')]);
+      const [d, f, sb, as] = await Promise.all([api('/docs'), api('/folders'), api('/synced'), api('/assets')]);
       this._loaded = Date.now();
       // Während der Bearbeitung nichts unter dem Editor austauschen, was gerade gespeichert wird
       const keep = this.docEditor && this.docEditor.state.id;
       const docs = keep ? d.docs.map(x => (x.id === keep ? (this.doc(keep) || x) : x)) : d.docs;
-      this.setState({ docs, folders: f.folders, synced: { ...Object.fromEntries(sb.blocks.map(x => [x.id, x])), ...this.pendingSynced() } });
+      this.setState({ docs, folders: f.folders, assets: as.assets, synced: { ...Object.fromEntries(sb.blocks.map(x => [x.id, x])), ...this.pendingSynced() } });
     } catch { /* still */ }
   }
   onFocus = () => { if (Date.now() - (this._loaded || 0) > 30000) this.refresh(); };
@@ -261,7 +270,20 @@ class App extends Component {
       interactive: !!interactive, embeds: e.embeds !== false,
       synced: Object.fromEntries(Object.values(this.state.synced).map(x => [x.id, x.content])),
       subpages: docId ? this.docChildren(docId).map(k => ({ id: k.id, title: k.title })) : [],
+      assets: this.assetMap(),
     };
+  }
+  assetMap() {
+    if (this._assetMapSrc === this.state.assets) return this._assetMap;
+    const byId = new Map(this.state.assets.map(a => [a.id, a]));
+    this._assetMapSrc = this.state.assets;
+    this._assetMap = Object.fromEntries(this.state.assets.map(a => [a.id, { ...a, parentName: a.parent && byId.get(a.parent) ? byId.get(a.parent).name : null }]));
+    return this._assetMap;
+  }
+  // Dokumente, die auf ein Dokument verlinken
+  backlinks(id) {
+    const re = new RegExp(`/doc/${id.replace(/[^A-Za-z0-9_-]/g, '')}(?![A-Za-z0-9_-])`);
+    return this.state.docs.filter(d => d.id !== id && d.content.includes('/doc/' + id) && re.test(d.content)).sort((a, b) => a.title.localeCompare(b.title, 'de'));
   }
   flash(msg, undoDocId, isErr) {
     clearTimeout(this._t);
@@ -321,7 +343,15 @@ class App extends Component {
   };
   onBeforeUnload = e => { if (this.isDirty()) { e.preventDefault(); e.returnValue = ''; } };
   onKey = e => {
+    // Strg/⌘+K: Schnellsuche (im Editor nur ohne Markierung – mit Markierung setzt Strg+K einen Link)
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k' && this.state.boot === 'ready' && this.state.user && !e.defaultPrevented) {
+      e.preventDefault();
+      this.setState({ palette: !this.state.palette });
+      return;
+    }
     if (e.key === 'Escape') {
+      if (this.state.palette) return this.setState({ palette: false });
+      if (this.state.tplPick) return this.setState({ tplPick: null });
       if (this.state.share) return this.setState({ share: null });
       if (this.state.rev) return this.setState({ rev: null });
       if (this.state.helpOpen) return this.setState({ helpOpen: false });
@@ -331,8 +361,22 @@ class App extends Component {
   };
 
   // ---------- Dokumentaktionen ----------
-  openEditor(d, folder, replace, parent) {
-    this.go('edit', { docId: d ? d.id : null, newFolder: d ? null : (folder || this.state.folder || null), newParent: d ? null : (parent || null), editKey: ++this.editSeq }, replace);
+  openEditor(d, folder, replace, parent, template) {
+    this.go('edit', { docId: d ? d.id : null, newFolder: d ? null : (folder || this.state.folder || null), newParent: d ? null : (parent || null), newTemplate: d ? null : (template || null), editKey: ++this.editSeq }, replace);
+  }
+  // Neues Dokument: erst Vorlage wählen
+  newDocument(folder, parent) {
+    if (!this.canEdit()) return;
+    this.setState({ tplPick: { folder: folder || this.state.folder || null, parent: parent || null }, menuId: null });
+  }
+  async saveAsTemplate(d) {
+    const name = prompt('Name der neuen Vorlage:', d.title);
+    if (!name || !name.trim()) return;
+    try { await api('/templates', { method: 'POST', body: { fromDoc: d.id, name: name.trim(), description: `Aus „${d.title}“` } }); await this.loadTemplates(); this.flash('Als Vorlage gespeichert'); } catch (e) { this.fail(e); }
+  }
+  openTemplatesSettings() {
+    this.go('settings');
+    setTimeout(() => { const el = document.getElementById('panel-templates'); if (el) this.scrollToEl(el); }, 80);
   }
   // Umschalter Lesen/Bearbeiten
   setMode(d, mode) {
@@ -521,6 +565,7 @@ class App extends Component {
             ${s.page === 'search' && this.renderSearch()}
             ${s.page === 'notifications' && this.renderNotifications(staleDocs, touched)}
             ${s.page === 'settings' && html`<${SettingsPage} app=${this} />`}
+            ${s.page === 'inventory' && html`<${InventoryPage} app=${this} />`}
             ${s.page === 'admin' && this.isAdmin() && html`<${AdminPage} app=${this} />`}
           </div>
         </main>
@@ -528,6 +573,8 @@ class App extends Component {
           onChange=${e => { if (e.target.files && e.target.files.length) this.readFiles(e.target.files); e.target.value = ''; }} />
         ${s.helpOpen && this.renderHelp()}
         ${s.rev && this.renderRevisions()}
+        ${s.palette && html`<${CommandPalette} app=${this} onClose=${() => this.setState({ palette: false })} />`}
+        ${s.tplPick && html`<${TemplatePicker} app=${this} folder=${s.tplPick.folder} parent=${s.tplPick.parent} onClose=${() => this.setState({ tplPick: null })} />`}
         ${s.share && html`<${ShareDialog} app=${this} item=${s.share} onClose=${() => this.setState({ share: null })} />`}
         ${s.toast && html`
           <div class=${'toast' + (s.toastErr ? ' error' : '')} role="status" aria-live="polite">
@@ -563,7 +610,7 @@ class App extends Component {
     if (!this.canEdit()) return null;
     return html`
       <button type="button" class="btn btn-ghost" onClick=${() => this.triggerImport()}><span class="ms">upload_file</span>Importieren</button>
-      <button type="button" class="btn btn-primary" onClick=${() => this.openEditor(null, this.state.folder)}><span class="ms">add</span>Neues Dokument</button>`;
+      <button type="button" class="btn btn-primary" onClick=${() => this.newDocument(this.state.folder)}><span class="ms">add</span>Neues Dokument</button>`;
   }
 
   // ---------- Seitenleiste ----------
@@ -589,10 +636,13 @@ class App extends Component {
             ${expanded && html`<button type="button" class="icon-btn" title="Seitenleiste einklappen" onClick=${e => { stop(e); this.setSettings({ sidebarCollapsed: true }); }}><span class="ms s19">keyboard_double_arrow_left</span></button>`}
           </div>
           ${!expanded && html`<div style=${{ display: 'flex', justifyContent: 'center' }}><button type="button" class="icon-btn" title="Ausklappen" onClick=${e => { stop(e); this.setSettings({ sidebarCollapsed: false }); }}><span class="ms s19">keyboard_double_arrow_right</span></button></div>`}
-          ${expanded ? this.globalSearchInput('sb-search', 'Globale Suche') : html`<button type="button" class="sb-search-btn" title="Suche" onClick=${() => this.go('search')}><span class="ms s16">search</span></button>`}
+          ${expanded
+            ? html`<button type="button" class="sb-search sb-pal" onClick=${() => this.setState({ palette: true })} title="Schnellsuche (Strg+K)"><span class="ms">search</span><span class="grow">Suchen …</span><kbd>${/Mac/.test(navigator.platform) ? '⌘' : 'Strg'} K</kbd></button>`
+            : html`<button type="button" class="sb-search-btn" title="Schnellsuche (Strg+K)" onClick=${() => this.setState({ palette: true })}><span class="ms s16">search</span></button>`}
           <nav class="nav">
             ${navItem('Dashboard', 'dashboard', s.page === 'dashboard', () => this.go('dashboard'))}
             ${navItem('Dokumente', 'article', (s.page === 'docs' && !s.folder) || s.page === 'doc' || s.page === 'edit', () => this.go('docs', { folder: null, tag: null, q: '' }))}
+            ${navItem('Inventar', 'inventory_2', s.page === 'inventory', () => this.go('inventory', { assetId: null, invTab: 'list' }))}
             <button type="button" class="nav-item" title="Lesezeichen" onClick=${() => this.setSettings({ bmOpen: !st.bmOpen })}>
               <span class="ms">bookmark</span>
               ${expanded && html`<span class="grow">Lesezeichen</span><span class="ms chev">${st.bmOpen ? 'expand_less' : 'expand_more'}</span>`}
@@ -837,7 +887,7 @@ class App extends Component {
                       <div class="menu row-menu" onClick=${stop}>
                         <button type="button" class="menu-item" onClick=${() => this.go('doc', { docId: d.id })}><span class="ms">visibility</span>Öffnen</button>
                         ${canEdit && html`<button type="button" class="menu-item" onClick=${() => this.openEditor(d)}><span class="ms">edit</span>Bearbeiten</button>`}
-                        ${canEdit && html`<button type="button" class="menu-item" onClick=${() => this.openEditor(null, d.folder, false, d.id)}><span class="ms">note_add</span>Unterseite anlegen</button>`}
+                        ${canEdit && html`<button type="button" class="menu-item" onClick=${() => this.newDocument(d.folder, d.id)}><span class="ms">note_add</span>Unterseite anlegen</button>`}
                         <button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); this.toggleBookmark(d); }}><span class="ms">bookmark</span>${d.bookmarked ? 'Lesezeichen entfernen' : 'Lesezeichen setzen'}</button>
                         <button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); download(fileName(d), docMd(d)); }}><span class="ms">download</span>Als .md herunterladen</button>
                         ${canEdit && html`<div class="menu-sep"></div><button type="button" class="menu-item danger" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span>Löschen</button>`}
@@ -890,7 +940,7 @@ class App extends Component {
       return html`
         <div class="page g14" data-screen-label="Editor">
           ${crumbs}
-          <${DocEditor} key=${'e' + s.editKey} app=${this} doc=${d} folder=${s.newFolder} parent=${s.newParent} />
+          <${DocEditor} key=${'e' + s.editKey} app=${this} doc=${d} folder=${s.newFolder} parent=${s.newParent} template=${s.newTemplate} />
         </div>`;
     }
     const r = md(d.content, this.renderCtx(d.id, canEdit));
@@ -916,7 +966,8 @@ class App extends Component {
             <button type="button" class="sq-btn" title="Versionsverlauf" onClick=${() => this.openRevisions(d)}><span class="ms">history</span></button>
             <button type="button" class="sq-btn" title="Als .md herunterladen" onClick=${() => download(fileName(d), docMd(d))}><span class="ms">download</span></button>
             <button type="button" class="sq-btn" title="Drucken / als PDF speichern" onClick=${() => window.print()}><span class="ms">print</span></button>
-            ${canEdit && html`<button type="button" class="sq-btn" title="Unterseite anlegen" onClick=${() => this.openEditor(null, d.folder, false, d.id)}><span class="ms">note_add</span></button>`}
+            ${canEdit && html`<button type="button" class="sq-btn" title="Unterseite anlegen" onClick=${() => this.newDocument(d.folder, d.id)}><span class="ms">note_add</span></button>`}
+            ${canEdit && html`<button type="button" class="sq-btn" title="Als Vorlage speichern" onClick=${() => this.saveAsTemplate(d)}><span class="ms">library_add</span></button>`}
             ${canEdit && html`<button type="button" class="sq-btn" title="Löschen" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span></button>`}
           </div>
         </div>
@@ -928,7 +979,7 @@ class App extends Component {
             ${(kids.length > 0 || canEdit) && html`
               <div class="section g14 subpages">
                 <div class="row-between"><h2 class="h2 s16">Unterseiten${kids.length ? ` (${kids.length})` : ''}</h2>
-                  ${canEdit && html`<button type="button" class="link-acc" onClick=${() => this.openEditor(null, d.folder, false, d.id)}>+ Unterseite</button>`}</div>
+                  ${canEdit && html`<button type="button" class="link-acc" onClick=${() => this.newDocument(d.folder, d.id)}>+ Unterseite</button>`}</div>
                 ${kids.length > 0 ? html`
                   <div class="card list">
                     ${kids.map(k => {
@@ -942,6 +993,23 @@ class App extends Component {
                     })}
                   </div>` : html`<div class="small muted">Noch keine Unterseiten. Unterseiten eignen sich für Detailthemen eines Projekts, z. B. Konfiguration, Backup oder Runbooks.</div>`}
               </div>`}
+            ${(() => {
+              const back = this.backlinks(d.id);
+              const linked = s.assets.filter(a => a.doc === d.id);
+              if (!back.length && !linked.length) return null;
+              return html`
+                <div class="section g14 backlinks">
+                  ${linked.length > 0 && html`<h2 class="h2 s16">Inventar (${linked.length})</h2>
+                    <div class="card list">${linked.map(a => html`<button type="button" class="list-row" onClick=${() => this.go('inventory', { assetId: a.id })}>
+                      <div class="ficon s30" style=${c}><span class="ms">${{ host: 'dns', vm: 'computer', container: 'deployed_code', device: 'router', service: 'apps', network: 'lan' }[a.kind] || 'inventory_2'}</span></div>
+                      <div style=${{ flex: 1, minWidth: 0 }}><div class="t">${a.name}</div><div class="m mono">${a.kind === 'network' ? a.data.cidr || '' : a.ips.map(i => i.address).join(', ') || '—'}</div></div></button>`)}</div>`}
+                  ${back.length > 0 && html`<h2 class="h2 s16">Verlinkt von (${back.length})</h2>
+                    <div class="card list">${back.map(k => html`<button type="button" class="list-row" onClick=${() => this.go('doc', { docId: k.id })}>
+                      <div class="ficon s30" style=${fcol(this.F(k.folder).hue)}><span class="ms">link</span></div>
+                      <div style=${{ flex: 1, minWidth: 0 }}><div class="t">${k.title}</div><div class="m">${this.folderPath(k.folder)}</div></div>
+                      <div class="d">${fmtDate(k.updated)}</div></button>`)}</div>`}
+                </div>`;
+            })()}
           </div>
           ${r.toc.length > 1 && html`
             <aside class="toc">

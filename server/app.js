@@ -14,6 +14,8 @@ import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint, hasValidToken
 import { shareRoutes, publicRoutes, getShareSettings } from './routes/shares.js';
 import { fileApi, serveFile, getEditorSettings, cleanupFiles, editorCspExtra } from './files.js';
 import { syncedApi, cleanupSynced } from './synced.js';
+import { templateApi } from './templates.js';
+import { assetApi } from './assets.js';
 
 setCspExtra(editorCspExtra);
 
@@ -90,6 +92,8 @@ export function createApp() {
   api.use('/shares', shareRoutes);
   api.use('/files', fileApi);
   api.use('/synced', syncedApi);
+  api.use('/templates', templateApi);
+  api.use('/assets', assetApi);
   api.use('/admin', requireRole('admin'), adminRoutes);
   api.use('/', docRoutes);
   api.use(() => { throw new HttpError(404, 'Nicht gefunden.'); });

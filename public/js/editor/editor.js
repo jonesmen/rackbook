@@ -1,7 +1,7 @@
 // Block-Editor (Notion-ähnlich): jeder Absatz ist ein Block, „/“ öffnet das Einfügemenü.
 // Gespeichert wird weiterhin Markdown (siehe md.js) – so bleiben Suche, Export und MCP unverändert nutzbar.
 import { html, Component } from '/vendor/preact-htm.js';
-import { parse, serialize, bid, CALLOUTS, STATUS_COLORS, parseStatus, fmtDay, esc } from '../md.js';
+import { parse, serialize, bid, CALLOUTS, STATUS_COLORS, parseStatus, fmtDay, esc, ASSET_ICONS } from '../md.js';
 import { domToMd, toEditHtml, setCaret, caretOffset, caretAtStart, caretAtEnd, caretOnFirstLine, caretOnLastLine, caretClientRect, splitAtCaret, textLen } from './dom.js';
 import { GROUPS, filterItems } from './slash.js';
 import { EMOJI_GROUPS, searchEmoji } from './emoji.js';
@@ -154,6 +154,10 @@ function blockBody(b, ed, num) {
     case 'kanban': return html`<${KanbanW} b=${b} ed=${ed} />`;
     case 'base': return html`<${BaseW} b=${b} ed=${ed} />`;
     case 'subpages': return html`<${SubpagesW} b=${b} ed=${ed} />`;
+    case 'asset': return html`<div class="w-asset">
+      <div dangerouslySetInnerHTML=${{ __html: ed.env.renderHtml([{ type: 'asset', ref: b.ref }], { assetLinks: false }) }}></div>
+      <div class="w-float"><button type="button" class="w-icon" title="Anderen Eintrag wählen" onClick=${e => ed.setState({ pop: { kind: 'asset', rect: e.currentTarget.getBoundingClientRect(), block: b, replace: true } })}><span class="ms">swap_horiz</span></button>
+        <button type="button" class="w-icon" title="Entfernen" onClick=${() => ed.remove(b)}><span class="ms">delete</span></button></div></div>`;
     case 'hr': return html`<hr class="md-hr ed-hr" />`;
     case 'pagebreak': return html`<div class="md-pagebreak"><span>Seitenumbruch</span></div>`;
     default: return html`<div class="md-media-missing">Unbekannter Block</div>`;
@@ -175,6 +179,21 @@ function Pop({ rect, children, cls, onClose }) {
   const style = flip ? { left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)) + 'px', bottom: (window.innerHeight - rect.top + 6) + 'px' }
     : { left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)) + 'px', top: top + 'px' };
   return html`<div class="ed-pop-back" onMouseDown=${e => { if (e.target === e.currentTarget) onClose(); }}><div class=${'ed-pop ' + (cls || '')} style=${style} onMouseDown=${e => e.stopPropagation()}>${children}</div></div>`;
+}
+
+class AssetPicker extends Component {
+  state = { q: '' };
+  render({ assets, onPick }, { q }) {
+    const t = q.trim().toLowerCase();
+    const list = assets.filter(a => !t || [a.name, ...a.ips.map(i => i.address), a.data.cidr || ''].join(' ').toLowerCase().includes(t)).slice(0, 40);
+    return html`<div class="ed-emoji">
+      <input class="w-input" placeholder="Inventar durchsuchen (Name, IP) …" value=${q} autofocus onInput=${e => this.setState({ q: e.target.value })}
+        onKeyDown=${e => { if (e.key === 'Enter' && list[0]) { e.preventDefault(); onPick(list[0]); } }} />
+      <div class="ed-synced-list">${list.map(a => html`<button type="button" class="menu-item" onClick=${() => onPick(a)}>
+        <span class="ms">${ASSET_ICONS[a.kind] || 'inventory_2'}</span><span class="grow ell">${a.name}</span><span class="faint small mono">${a.kind === 'network' ? a.data.cidr || '' : a.ips.map(i => i.address)[0] || ''}</span></button>`)}
+        ${!list.length && html`<div class="md-empty">${assets.length ? 'Kein Treffer.' : 'Noch kein Inventar erfasst (Seitenleiste → Inventar).'}</div>`}</div>
+    </div>`;
+  }
 }
 
 class EmojiPicker extends Component {
@@ -226,7 +245,7 @@ export class BlockEditor extends Component {
     this.undoStack = []; this.redoStack = [];
     this.lastKind = null; this.lastSnap = 0;
     this.synced = {}; // ref → { tree, saved }
-    this.state = { v: 0, slash: null, pop: null, menu: null, tb: null, drop: null, active: null, diagram: null };
+    this.state = { v: 0, slash: null, link: null, pop: null, menu: null, tb: null, drop: null, active: null, diagram: null };
     this.rootRef = { current: null };
     this.lastEmitted = this.value();
   }
@@ -349,6 +368,8 @@ export class BlockEditor extends Component {
     // Slash-Menü
     if (this.state.slash) this.updateSlash();
     else if (e.inputType === 'insertText' && e.data === '/') this.maybeOpenSlash(b, el);
+    if (this.state.link) this.updateLink();
+    else if (e.inputType === 'insertText' && e.data === '[') this.maybeOpenLink(b, el);
     // Markdown-Kürzel am Zeilenanfang
     if (e.inputType === 'insertText' && e.data === ' ' && ['p', 'bullet', 'number'].includes(b.type)) this.shortcut(b, el);
     if (e.inputType === 'insertText' && e.data === '`' && b.type === 'p' && b.text === '\\`\\`\\`') {
@@ -435,6 +456,7 @@ export class BlockEditor extends Component {
   // ----- Tastatur -----
   onKey(b, e, el, tb) {
     const mod = e.metaKey || e.ctrlKey;
+    if (this.state.link && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) { e.preventDefault(); this.linkKey(e.key); return; }
     if (this.state.slash) {
       if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) { e.preventDefault(); this.slashKey(e.key); return; }
     }
@@ -445,7 +467,8 @@ export class BlockEditor extends Component {
       if (k === 'b') { e.preventDefault(); this.fmt('bold'); return; }
       if (k === 'i') { e.preventDefault(); this.fmt('italic'); return; }
       if (k === 'e') { e.preventDefault(); this.fmt('code'); return; }
-      if (k === 'k') { e.preventDefault(); this.fmt('link'); return; }
+      // Strg+K: mit Markierung Link setzen, sonst Schnellsuche (globaler Kurzbefehl)
+      if (k === 'k') { if (!getSelection().isCollapsed) { e.preventDefault(); this.fmt('link'); } return; }
       if (k === 'x' && e.shiftKey) { e.preventDefault(); this.fmt('strikeThrough'); return; }
       if (k === 's') { e.preventDefault(); this.flush(); if (this.props.onSave) this.props.onSave(); return; }
     }
@@ -732,6 +755,56 @@ export class BlockEditor extends Component {
     else document.execCommand('createLink', false, u);
   }
 
+  // ----- [[ Verlinkung -----
+  maybeOpenLink(b, el) {
+    const sel = getSelection();
+    if (!sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    const node = r.startContainer, off = r.startOffset;
+    if (node.nodeType !== 3 || off < 2 || node.data.slice(off - 2, off) !== '[[') return;
+    const rect = caretClientRect() || el.getBoundingClientRect();
+    this.setState({ link: { block: b, node, offset: off - 2, query: '', sel: 0, rect } });
+  }
+  updateLink() {
+    const l = this.state.link;
+    const sel = getSelection();
+    if (!sel.rangeCount) return this.setState({ link: null });
+    const r = sel.getRangeAt(0);
+    if (r.startContainer !== l.node || r.startOffset < l.offset + 2 || l.node.data.slice(l.offset, l.offset + 2) !== '[[') return this.setState({ link: null });
+    const query = l.node.data.slice(l.offset + 2, r.startOffset);
+    if (query.length > 60 || /[\]\n]/.test(query)) return this.setState({ link: null });
+    this.setState({ link: { ...l, query, sel: 0 } });
+  }
+  linkItems() {
+    const l = this.state.link;
+    const q = String(l.query || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const n = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const docs = (this.env.docs ? this.env.docs() : []).filter(d => !q || n(d.title).includes(q));
+    return docs.sort((a, b) => (n(b.title).startsWith(q) - n(a.title).startsWith(q)) || b.updated - a.updated).slice(0, 8);
+  }
+  linkKey(key) {
+    const l = this.state.link;
+    const items = this.linkItems();
+    if (key === 'Escape') return this.setState({ link: null });
+    if (key === 'ArrowDown') return this.setState({ link: { ...l, sel: Math.min(items.length - 1, l.sel + 1) } });
+    if (key === 'ArrowUp') return this.setState({ link: { ...l, sel: Math.max(0, l.sel - 1) } });
+    if (items[l.sel]) this.applyLink(items[l.sel]);
+    else this.setState({ link: null });
+  }
+  applyLink(d) {
+    const l = this.state.link;
+    this.setState({ link: null });
+    const el = this.els.get(l.block.id);
+    if (!el || !l.node.isConnected) return;
+    const sel = getSelection();
+    const r = document.createRange();
+    r.setStart(l.node, l.offset);
+    r.setEnd(l.node, Math.min(l.node.data.length, l.offset + 2 + l.query.length));
+    sel.removeAllRanges();
+    sel.addRange(r);
+    document.execCommand('insertHTML', false, `<a href="/doc/${esc(d.id)}">${esc(d.title)}</a>&nbsp;`);
+  }
+
   // ----- Slash-Menü -----
   maybeOpenSlash(b, el) {
     const sel = getSelection();
@@ -848,6 +921,10 @@ export class BlockEditor extends Component {
       this.focusLater(n.id, 0);
       return;
     }
+    if (key === 'asset') {
+      this.setState({ pop: { kind: 'asset', rect, block: b } });
+      return;
+    }
     if (key === 'synced') {
       this.setState({ pop: { kind: 'synced', rect, block: b } });
       return;
@@ -925,6 +1002,14 @@ export class BlockEditor extends Component {
       this.focusLater(first.id, 0);
     } catch (e) { this.env.flash(e.message || 'Fehler', true); }
     return fromBlock;
+  }
+  pickAsset(a) {
+    const p = this.state.pop;
+    this.setState({ pop: null });
+    if (p.replace) { this.mutate(() => { p.block.ref = a.id; }); return; }
+    const loc = locate(this.root(p.block), p.block.id);
+    const nb = { id: bid(), type: 'asset', ref: a.id };
+    this.mutate(() => { if (!p.block.text) loc.arr.splice(loc.idx, 1, nb); else loc.arr.splice(loc.idx + 1, 0, nb); });
   }
   useSynced(ref) {
     const p = this.state.pop;
@@ -1048,6 +1133,16 @@ export class BlockEditor extends Component {
         <${EmojiPicker} onPick=${e => { const p = this.state.pop; this.setState({ pop: null }); this.insertInline(p, e, false); }} /><//>`}
       ${s.pop && ['date', 'time', 'status', 'math', 'link'].includes(s.pop.kind) && html`<${Pop} rect=${s.pop.rect} onClose=${() => this.setState({ pop: null })}>
         <${ValuePop} kind=${s.pop.kind} value=${s.pop.value} color=${s.pop.color} onDone=${v => this.atomDone(v)} onRemove=${s.pop.atom ? () => this.atomRemove() : (s.pop.kind === 'link' && s.pop.anchor ? () => { this.setState({ pop: null }); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(s.pop.range); document.execCommand('unlink'); } : null)} /><//>`}
+      ${s.link && html`<${Pop} rect=${s.link.rect} cls="ed-slash ed-link" onClose=${() => this.setState({ link: null })}>
+        <div class="menu-label">SEITE VERLINKEN${s.link.query ? ` – „${s.link.query}“` : ''}</div>
+        ${this.linkItems().map((d, k) => html`<button type="button" class=${'menu-item slash-item' + (k === s.link.sel ? ' sel' : '')} onMouseDown=${e => e.preventDefault()}
+          onMouseEnter=${() => { if (s.link.sel !== k) this.setState({ link: { ...s.link, sel: k } }); }} onClick=${() => this.applyLink(d)}>
+          <span class="slash-ic"><span class="ms">description</span></span><span class="slash-tx"><span class="slash-l">${d.title}</span><span class="slash-d">${this.env.folderPath ? this.env.folderPath(d.folder) : ''}</span></span></button>`)}
+        ${this.linkItems().length === 0 && html`<div class="md-empty slash-none">Keine Seite gefunden.</div>`}
+      <//>`}
+      ${s.pop && s.pop.kind === 'asset' && html`<${Pop} rect=${s.pop.rect} cls="ed-synced-pop" onClose=${() => this.setState({ pop: null })}>
+        <${AssetPicker} assets=${this.env.assets ? this.env.assets() : []} onPick=${a => this.pickAsset(a)} />
+      <//>`}
       ${s.pop && s.pop.kind === 'synced' && html`<${Pop} rect=${s.pop.rect} cls="ed-synced-pop" onClose=${() => this.setState({ pop: null })}>
         <button type="button" class="menu-item" onClick=${() => this.createSynced()}><span class="ms">add</span>Neuen synchronisierten Block erstellen</button>
         ${this.env.synced.all().length > 0 && html`<div class="menu-sep"></div><div class="menu-label">VORHANDENEN EINFÜGEN</div>

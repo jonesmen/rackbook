@@ -187,6 +187,38 @@ const MIGRATIONS = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // 7: Vorlagen und Inventar (Hosts, VMs, Container, Geräte, Dienste, Netzwerke)
+  `
+  CREATE TABLE templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL DEFAULT 'description',
+    title TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    content TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE assets (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    parent_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    data TEXT NOT NULL DEFAULT '{}',
+    ips TEXT NOT NULL DEFAULT '[]',
+    tags TEXT NOT NULL DEFAULT '[]',
+    doc_id TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX assets_parent ON assets(parent_id);
+  CREATE INDEX assets_kind ON assets(kind);
+  `,
 ];
 
 export function migrate() {
