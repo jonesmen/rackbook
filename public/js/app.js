@@ -696,6 +696,7 @@ class App extends Component {
           onClick=${() => { this.go('doc', { docId: d.id }); if (kids.length) this.toggleNode(key, true); }}>
           <span class="ms">${kids.length ? 'auto_stories' : 'description'}</span>
           ${expanded && html`<span class="grow">${d.title}</span>`}
+          ${expanded && kids.length > 0 && html`<span class="count" title=${`${kids.length} ${kids.length === 1 ? 'Unterseite' : 'Unterseiten'}`}>${kids.length}</span>`}
           ${chev(key, kids.length > 0)}
         </button>`);
       if (expanded && kids.length && isOpen(key)) walkDocs(kids, depth + 1);
@@ -703,14 +704,16 @@ class App extends Component {
     const walk = (p, depth) => this.subFolders(p).forEach(f => {
       const subs = this.subFolders(f.id);
       const top = s.docs.filter(d => d.folder === f.id && !(d.parent && this.doc(d.parent))).sort((a, b) => a.title.localeCompare(b.title, 'de'));
-      const count = s.docs.filter(d => this.folderSet(f.id).has(d.folder)).length;
+      // Direkter Inhalt: Unterordner + Seiten auf oberster Ebene (Unterseiten zählen bei ihrer Elternseite)
+      const count = subs.length + top.length;
+      const countTitle = [subs.length && `${subs.length} Unterordner`, top.length && `${top.length} ${top.length === 1 ? 'Seite' : 'Seiten'}`].filter(Boolean).join(', ');
       const active = s.page === 'docs' && s.folder === f.id;
       items.push(html`
         <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '')} title=${this.folderPath(f.id)} style=${pad(depth)}
           onClick=${() => { this.go('docs', { folder: f.id, tag: null, q: '' }); this.toggleNode(f.id, true); }}>
           <span class="ms">${f.icon}</span>
           ${expanded && html`<span class="grow">${f.name}</span>`}
-          ${expanded && html`<span class="count">${count}</span>`}
+          ${expanded && count > 0 && html`<span class="count" title=${countTitle}>${count}</span>`}
           ${chev(f.id, subs.length + top.length > 0)}
         </button>`);
       if (expanded && isOpen(f.id)) { walk(f.id, depth + 1); walkDocs(top, depth + 1); }
