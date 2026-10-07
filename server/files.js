@@ -124,6 +124,32 @@ export async function storeUpload(req, { name, docId, userId, maxBytes }) {
   return fileDto(row);
 }
 
+// Datei aus einem Puffer speichern (z. B. Upload über den MCP-Server)
+export function storeBuffer(buf, { name, docId, userId }) {
+  if (!buf || !buf.length) throw new HttpError(400, 'Die Datei ist leer.');
+  const id = randomToken(15);
+  mkdirSync(join(filesDir, id.slice(0, 2)), { recursive: true });
+  writeFileSync(pathOf(id), buf, { mode: 0o600, flag: 'wx' });
+  const row = {
+    id, name: normFileName(name), mime: sniff(buf.subarray(0, 4096), name), size: buf.length,
+    sha256: createHash('sha256').update(buf).digest('hex'), doc_id: docId || null, created_by: userId ?? null, created_at: Date.now(),
+  };
+  db.prepare('INSERT INTO files (id, name, mime, size, sha256, doc_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(row.id, row.name, row.mime, row.size, row.sha256, row.doc_id, row.created_by, row.created_at);
+  return fileDto(row);
+}
+export const getFileRow = id => (/^[A-Za-z0-9_-]{20}$/.test(String(id || '')) ? db.prepare('SELECT * FROM files WHERE id = ?').get(String(id)) : undefined);
+export function readFileBuffer(id) {
+  const p = pathOf(String(id));
+  return existsSync(p) ? readFileSync(p) : null;
+}
+// Markdown, mit dem eine Datei in ein Dokument eingebunden wird
+export function fileSnippet(f, caption) {
+  if (f.mime.startsWith('image/')) return `![${String(caption || f.name.replace(/\.[a-z0-9]+$/i, '')).replace(/[[\]\n]/g, '')}](/files/${f.id})`;
+  const kind = f.mime.startsWith('video/') ? 'video' : f.mime.startsWith('audio/') ? 'audio' : f.mime === 'application/pdf' ? 'pdf' : 'file';
+  return `::${kind} ${JSON.stringify({ src: `/files/${f.id}`, name: f.name, size: f.size })}`;
+}
+
 export const fileDto = f => ({ id: f.id, name: f.name, mime: f.mime, size: f.size, url: `/files/${f.id}`, created: f.created_at });
 
 // ---------- Signierte Links (für öffentliche Freigaben ohne Sitzung) ----------

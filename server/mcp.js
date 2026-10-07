@@ -1,6 +1,8 @@
 // Leichtgewichtiger MCP-Server (Model Context Protocol, Streamable HTTP, zustandslos).
 // KI-Assistenten (Claude, ChatGPT, Cursor …) können darüber Dokumentation lesen und pflegen.
 import { getSynced, syncedRefs } from './synced.js';
+import { getEditorSettings, storeBuffer, getFileRow, readFileBuffer, fileSnippet, fileRefs, fileDto } from './files.js';
+import { fmtSize } from '../public/js/md.js';
 import { db, tx, getSetting, setSetting } from './db.js';
 import { config } from './config.js';
 import { HttpError, randomToken, sha256, RateLimiter } from './security.js';
@@ -12,7 +14,7 @@ import { excerpt } from '../public/js/md.js';
 import { folderAncestors, folderDescendants, checkFolderParent, checkDocParent, moveDocSubtree, docDescendants, docAncestors } from './tree.js';
 
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
-export const SCOPES = ['read', 'write', 'delete', 'folders'];
+export const SCOPES = ['read', 'write', 'delete', 'folders', 'files'];
 const ROLE_RANK = { viewer: 1, editor: 2, admin: 3 };
 
 // ---------- Globale Einstellungen (Verwaltung → KI / MCP) ----------
@@ -22,6 +24,7 @@ export const MCP_DEFAULTS = {
   allowWrite: true,
   allowDelete: false,
   allowFolders: false,
+  allowFiles: true,
   maxTokenDays: 365,
   aiTag: 'ki',
   guidelines: '',
@@ -31,7 +34,7 @@ export const getMcpSettings = () => ({ ...MCP_DEFAULTS, ...getSetting('mcp', {})
 
 export function saveMcpSettings(b = {}) {
   const s = getMcpSettings();
-  for (const k of ['enabled', 'allowViewerTokens', 'allowWrite', 'allowDelete', 'allowFolders']) if (b[k] !== undefined) s[k] = !!b[k];
+  for (const k of ['enabled', 'allowViewerTokens', 'allowWrite', 'allowDelete', 'allowFolders', 'allowFiles']) if (b[k] !== undefined) s[k] = !!b[k];
   if (b.maxTokenDays !== undefined) {
     const n = Math.round(Number(b.maxTokenDays));
     if (!(n >= 0 && n <= 3650)) throw new HttpError(400, 'Maximale Laufzeit: 0 (unbegrenzt) bis 3650 Tage.');
@@ -60,6 +63,7 @@ export function grantableScopes(role, s = getMcpSettings()) {
   if (editor && s.allowWrite) out.push('write');
   if (editor && s.allowDelete) out.push('delete');
   if (editor && s.allowFolders) out.push('folders');
+  if (editor && s.allowFiles) out.push('files');
   return out;
 }
 
@@ -250,6 +254,7 @@ Der Inhalt ist Markdown; im Web-Editor erscheint jeder Absatz als Block. Verwend
 - Trennlinie \`---\`, Seitenumbruch für den Druck \`::pagebreak\`, Liste der Unterseiten \`::subpages\`
 - Kanban-Board: \`\`\`kanban mit JSON \`{"columns":[{"title":"Offen","color":"gray","cards":[{"title":"…","note":"…"}]}]}\`
 - Einbettung (nur wenn der Benutzer es wünscht): \`::embed {"url":"https://…"}\` (YouTube, Vimeo, Loom, Figma, Miro, Airtable, Typeform, Google Drive/Sheets, beliebige https-Seite)
+- Dateien: \`list_files\` zeigt hochgeladene Bilder, PDFs und Anhänge (auch je Dokument), \`read_file\` liefert ihren Inhalt (Bilder als Bild, Text/Konfigurationen/SVG als Text, PDFs als Ressource).${ctx.scopes.has('files') ? ' Mit `upload_file` lädst du Dateien hoch (Base64 oder Text, max. 20 MB) – mit `document` direkt ins Dokument; sonst das gelieferte Markdown selbst einfügen. Netzpläne lieber als ```mermaid, Screenshots/Fotos als Bild.' : ''}
 - Nicht verändern oder neu erfinden: Zeilen mit \`::image\`/\`![…](/files/…)\`, \`::video\`, \`::audio\`, \`::pdf\`, \`::file\`, \`::drawio\`, \`::excalidraw\`, \`::synced\` sowie \`\`\`base-Blöcke – sie verweisen auf hochgeladene Dateien, Zeichnungen bzw. synchronisierte Inhalte. Beim Umschreiben eines Dokuments unverändert übernehmen.
 - Kein HTML.
 
@@ -495,7 +500,138 @@ const TOOLS = [
       return { text: `Ordner „${folderPath(id)}“ angelegt (ID \`${id}\`).` };
     },
   },
+  {
+    name: 'list_files', scope: 'read', title: 'Dateien auflisten',
+    description: 'Listet hochgeladene Dateien (Bilder, PDFs, Anhänge, Diagramme) – alle zugänglichen oder nur die eines Dokuments – mit ID, Typ, Größe, verwendenden Dokumenten und dem Markdown zum Einbinden. Inhalt mit read_file lesen.',
+    inputSchema: { type: 'object', properties: { document: str('Optional: nur Dateien dieses Dokuments (ID)'), query: str('Optional: Suche im Dateinamen'), limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } } },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      const users = fileUsage();
+      let rows;
+      if (a.document) {
+        const d = loadDoc(ctx, a.document);
+        const ids = new Set([...fileRefs(d.content), ...db.prepare('SELECT id FROM files WHERE doc_id = ?').all(d.id).map(r => r.id)]);
+        rows = [...ids].map(getFileRow).filter(Boolean);
+      } else {
+        rows = db.prepare('SELECT * FROM files ORDER BY created_at DESC').all().filter(f => fileAccessible(ctx, f, users));
+      }
+      if (a.query) { const q = String(a.query).toLowerCase(); rows = rows.filter(f => f.name.toLowerCase().includes(q)); }
+      rows = rows.slice(0, Math.min(200, Number(a.limit) || 50));
+      const list = rows.map(f => ({ ...fileDto(f), documents: (users.get(f.id) || []).filter(d => folderOk(ctx, d.folder)).map(d => ({ id: d.id, title: d.title })), markdown: fileSnippet(f) }));
+      return {
+        text: list.length ? list.map(f => `- \`${f.id}\` ${f.name} · ${f.mime} · ${fmtSize(f.size)}${f.documents.length ? ` · in: ${f.documents.map(d => `${d.title} (\`${d.id}\`)`).join(', ')}` : ' · (nirgends eingebunden)'}\n  Einbinden: ${f.markdown}`).join('\n') : 'Keine Dateien gefunden.',
+        structured: { files: list },
+      };
+    },
+  },
+  {
+    name: 'read_file', scope: 'read', title: 'Datei lesen',
+    description: 'Liefert den Inhalt einer hochgeladenen Datei: Bilder (PNG, JPEG, GIF, WebP) als Bild, Textdateien (Konfigurationen, Logs, CSV, JSON, YAML, SVG, Draw.io/Excalidraw-Diagramme) als Text, PDFs als eingebettete Ressource. Andere Formate nur als Metadaten.',
+    inputSchema: { type: 'object', properties: { id: str('Datei-ID (aus list_files oder aus /files/<id> im Dokument)') }, required: ['id'] },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      const id = String(a.id || '').replace(/^.*\/files\//, '').replace(/[?#].*$/, '');
+      const f = getFileRow(id);
+      if (!f || !fileAccessible(ctx, f)) throw new ToolError(`Datei „${a.id}“ nicht gefunden (oder nicht freigegeben).`);
+      const buf = readFileBuffer(f.id);
+      if (!buf) throw new ToolError('Die Datei ist auf dem Server nicht mehr vorhanden.');
+      const head = `Datei \`${f.id}\` – ${f.name} (${f.mime}, ${fmtSize(f.size)})`;
+      const structured = fileDto(f);
+      if (/^image\/(png|jpeg|gif|webp)$/.test(f.mime)) {
+        if (buf.length > 5 * 1048576) return { text: `${head}\nDas Bild ist größer als 5 MB und wird nicht übertragen.`, structured };
+        return { content: [{ type: 'text', text: head }, { type: 'image', data: buf.toString('base64'), mimeType: f.mime }], structured };
+      }
+      if (f.mime === 'application/pdf') {
+        if (buf.length > 10 * 1048576) return { text: `${head}\nDas PDF ist größer als 10 MB und wird nicht übertragen.`, structured };
+        return { content: [{ type: 'text', text: head }, { type: 'resource', resource: { uri: `rackbook://file/${f.id}`, mimeType: 'application/pdf', blob: buf.toString('base64') } }], structured };
+      }
+      const text = asText(buf);
+      if (text !== null) {
+        const max = 512 * 1024;
+        const cut = text.length > max;
+        return { text: `${head}${cut ? ' – gekürzt auf die ersten 512 KB' : ''}\n\n${cut ? text.slice(0, max) : text}`, structured };
+      }
+      return { text: `${head}\nDieses Format kann nicht als Text oder Bild übertragen werden.`, structured };
+    },
+  },
+  {
+    name: 'upload_file', scope: 'files', title: 'Datei hochladen',
+    description: 'Lädt eine Datei hoch (Base64 in `data` oder reiner Text in `text`, z. B. eine Konfigurationsdatei, ein Diagramm als SVG oder ein Screenshot). Liefert das Markdown zum Einbinden. Mit `document` wird sie direkt in dieses Dokument eingefügt (optional am Ende von `section`). Keine Geheimnisse hochladen.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: str('Dateiname mit Endung, z. B. „netzplan.png“ oder „docker-compose.yml“'),
+        data: str('Dateiinhalt als Base64 (für Binärdateien wie Bilder oder PDFs)'),
+        text: str('Alternativ: Dateiinhalt als Text (UTF-8)'),
+        document: str('Optional: Dokument-ID, in das die Datei eingefügt wird'),
+        section: str('Optional: Abschnittsüberschrift im Dokument, an deren Ende eingefügt wird'),
+        caption: str('Optional: Bildunterschrift/Alternativtext für Bilder'),
+      },
+      required: ['name'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    run(ctx, a, req) {
+      const es = getEditorSettings();
+      if (!es.uploads) throw new ToolError('Datei-Uploads sind in Rackbook deaktiviert (Verwaltung → System → Editor & Medien).');
+      const maxBytes = Math.min(es.uploadMaxMb, MCP_UPLOAD_MAX_MB) * 1048576;
+      let buf;
+      if (typeof a.text === 'string' && a.data === undefined) buf = Buffer.from(a.text, 'utf8');
+      else if (typeof a.data === 'string') {
+        const b64 = a.data.replace(/^data:[^,]*;base64,/, '').replace(/\s+/g, '');
+        if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(b64)) throw new ToolError('`data` ist kein gültiges Base64.');
+        buf = Buffer.from(b64, b64.includes('-') || b64.includes('_') ? 'base64url' : 'base64');
+      } else throw new ToolError('Bitte `data` (Base64) oder `text` angeben.');
+      if (!buf.length) throw new ToolError('Die Datei ist leer.');
+      if (buf.length > maxBytes) throw new ToolError(`Datei zu groß (max. ${Math.round(maxBytes / 1048576)} MB über MCP).`);
+      let doc = null;
+      if (a.document) { need(ctx, 'write'); doc = loadDoc(ctx, a.document); }
+      const f = storeBuffer(buf, { name: String(a.name || 'datei'), docId: doc ? doc.id : null, userId: ctx.user.id });
+      logWrite(ctx, req, 'file.uploaded', f.id, { name: f.name, size: f.size, mime: f.mime });
+      const snippet = fileSnippet(f, a.caption);
+      if (doc) {
+        const r = TOOLS.find(t => t.name === 'append_to_document').run(ctx, { id: doc.id, content: snippet, section: a.section }, req);
+        return { text: `Datei \`${f.id}\` (${f.name}, ${f.mime}, ${fmtSize(f.size)}) hochgeladen und eingefügt. ${r.text}`, structured: { file: f, markdown: snippet, document: r.structured } };
+      }
+      return { text: `Datei \`${f.id}\` (${f.name}, ${f.mime}, ${fmtSize(f.size)}) hochgeladen.\nZum Einbinden in ein Dokument diese Zeile verwenden (eigener Absatz):\n${snippet}`, structured: { file: f, markdown: snippet } };
+    },
+  },
 ];
+
+// ---------- Dateien ----------
+const MCP_UPLOAD_MAX_MB = 20;
+// Welche (nicht gelöschten) Dokumente binden welche Datei ein?
+function fileUsage() {
+  const map = new Map();
+  for (const d of db.prepare('SELECT id, title, folder_id, content FROM documents WHERE deleted_at IS NULL').iterate()) {
+    for (const fid of fileRefs(d.content)) { if (!map.has(fid)) map.set(fid, []); map.get(fid).push({ id: d.id, title: d.title, folder: d.folder_id }); }
+  }
+  return map;
+}
+// Ohne Ordner-Beschränkung sind alle Dateien lesbar (wie für angemeldete Benutzer in der Web-Oberfläche);
+// mit Beschränkung nur Dateien, die in freigegebenen Dokumenten stecken, oder eigene Uploads.
+function fileAccessible(ctx, f, usage) {
+  if (!ctx.folders.length) return true;
+  if (f.created_by === ctx.user.id) return true;
+  const docs = (usage || fileUsage()).get(f.id) || [];
+  if (docs.some(d => folderOk(ctx, d.folder))) return true;
+  const own = f.doc_id && db.prepare('SELECT folder_id FROM documents WHERE id = ? AND deleted_at IS NULL').get(f.doc_id);
+  return !!(own && folderOk(ctx, own.folder_id));
+}
+// Text erkennen: gültiges UTF-8 ohne Steuerzeichen-Müll
+function asText(buf) {
+  const sample = buf.subarray(0, 8192);
+  if (sample.includes(0)) return null;
+  try {
+    const t = new TextDecoder('utf-8', { fatal: true }).decode(buf.length > 4 * 1048576 ? buf.subarray(0, 4 * 1048576) : buf);
+    const ctrl = (t.slice(0, 8192).match(/[\u0001-\u0008\u000e-\u001f]/g) || []).length;
+    return ctrl > 8 ? null : t;
+  } catch { return null; }
+}
+
+// Schneller Vorab-Check des Tokens (bestimmt, wie groß der Anfragekörper sein darf)
+export function hasValidToken(req) {
+  try { return !!authenticate(req); } catch { return false; }
+}
 
 function accessibleDocs(ctx) {
   return db.prepare('SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY updated_at DESC').all().filter(d => folderOk(ctx, d.folder_id));
@@ -544,7 +680,7 @@ async function handle(ctx, msg, req) {
       try {
         need(ctx, tool.scope);
         const r = await tool.run(ctx, params.arguments || {}, req);
-        return rpcResult(id, { content: [{ type: 'text', text: r.text }], ...(r.structured ? { structuredContent: r.structured } : {}), isError: false });
+        return rpcResult(id, { content: r.content || [{ type: 'text', text: r.text }], ...(r.structured ? { structuredContent: r.structured } : {}), isError: false });
       } catch (e) {
         if (e instanceof ToolError || e instanceof HttpError) return rpcResult(id, { content: [{ type: 'text', text: e.message }], isError: true });
         throw e;
