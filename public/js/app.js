@@ -68,20 +68,17 @@ class App extends Component {
     showAllFolders: false, synced: {}, editKey: 0, newFolder: null, newParent: null, helpOpen: false, toast: null, toastErr: false, undoDocId: null,
     userMenu: false, rev: null, saving: false, share: null,
     sbWidth: (() => { try { const w = Number(localStorage.getItem('rackbook.sbWidth')); return w >= 200 && w <= 480 ? w : 248; } catch { return 248; } })(),
-    openNodes: (() => {
-      try {
-        const v = JSON.parse(localStorage.getItem('rackbook.openNodes'));
-        if (v && typeof v === 'object') return v;
-        const old = JSON.parse(localStorage.getItem('rackbook.openFolders'));
-        return Array.isArray(old) ? Object.fromEntries(old.map(id => [id, true])) : {};
-      } catch { return {}; }
-    })(),
+    // Seitenbaum: beim Aufruf zugeklappt, nur der Pfad zur aktuellen Seite wird geöffnet
+    openNodes: {},
   };
 
   // ---------- Lebenszyklus ----------
   componentDidUpdate(_, prev) {
+    // Seitenbaum folgt der Navigation: Pfad zum aktuellen Ordner/Dokument aufklappen
+    const moved = prev.page !== this.state.page || prev.docId !== this.state.docId || prev.folder !== this.state.folder;
+    if (moved || prev.docs !== this.state.docs || prev.folders !== this.state.folders) this.revealCurrent();
     // Aktives Element im Seitenbaum sichtbar halten
-    if (prev.page !== this.state.page || prev.docId !== this.state.docId || prev.folder !== this.state.folder) {
+    if (moved) {
       requestAnimationFrame(() => {
         const el = document.querySelector('.sb-scroll .nav-item.folder.active');
         if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
@@ -104,6 +101,7 @@ class App extends Component {
     window.addEventListener('pointerup', up);
   };
   componentDidMount() {
+    try { localStorage.removeItem('rackbook.openNodes'); localStorage.removeItem('rackbook.openFolders'); } catch { /* egal */ }
     setUnauthorizedHandler(() => this.sessionLost());
     this.boot();
     window.addEventListener('popstate', this.onPop);
@@ -223,9 +221,21 @@ class App extends Component {
     return out;
   }
   toggleNode(key, open) {
-    const openNodes = { ...this.state.openNodes, [key]: open };
-    try { localStorage.setItem('rackbook.openNodes', JSON.stringify(openNodes)); } catch { /* egal */ }
-    this.setState({ openNodes });
+    this.setState({ openNodes: { ...this.state.openNodes, [key]: open } });
+  }
+  // Ordner- und Seitenpfad bis zum aktuell geöffneten Element im Baum aufklappen
+  revealCurrent() {
+    const s = this.state;
+    const cur = (s.page === 'doc' || s.page === 'edit') && s.docId ? this.doc(s.docId) : null;
+    const folder = s.page === 'docs' ? s.folder : cur ? cur.folder : null;
+    const keys = folder ? this.folderChain(folder).map(f => f.id) : [];
+    if (cur) this.docChain(cur).forEach(d => keys.push('d:' + d.id));
+    // bei der Navigation wird nur aufgeklappt – einmal geöffnet bleibt der Pfad, bis man ihn selbst zuklappt
+    const key = [s.page, s.docId, s.folder].join('|');
+    if (this._revealed === key + keys.join(',')) return;
+    this._revealed = key + keys.join(',');
+    const missing = keys.filter(k => s.openNodes[k] !== true);
+    if (missing.length) this.setState({ openNodes: { ...s.openNodes, ...Object.fromEntries(missing.map(k => [k, true])) } });
   }
   doc(id) { return this.state.docs.find(d => d.id === id); }
   isDirty() { return !!(this.docEditor && this.docEditor.isPending()); }
@@ -621,12 +631,7 @@ class App extends Component {
   // Seitenbaum links: Ordner → Unterordner → Dokumente → Unterseiten (jede Ebene aufklappbar)
   renderFolderTree(expanded) {
     const s = this.state;
-    const curDoc = (s.page === 'doc' || s.page === 'edit') && this.doc(s.docId);
-    const curFolder = s.page === 'docs' ? s.folder : curDoc ? curDoc.folder : null;
-    // Pfad zum aktuellen Ordner/Dokument automatisch aufklappen (solange nicht ausdrücklich zugeklappt)
-    const auto = new Set(curFolder ? this.folderChain(curFolder).map(f => f.id) : []);
-    if (curDoc) this.docChain(curDoc).forEach(d => auto.add('d:' + d.id));
-    const isOpen = key => (s.openNodes[key] !== undefined ? s.openNodes[key] : auto.has(key));
+    const isOpen = key => s.openNodes[key] === true;
     const pad = depth => (expanded ? { paddingLeft: (11 + depth * 14) + 'px' } : null);
     const chev = (key, has) => (!expanded ? null : has
       ? html`<span class="ms tree-chev" role="button" aria-label=${isOpen(key) ? 'Zuklappen' : 'Aufklappen'} onClick=${e => { stop(e); this.toggleNode(key, !isOpen(key)); }}>${isOpen(key) ? 'expand_more' : 'chevron_right'}</span>`
@@ -635,10 +640,10 @@ class App extends Component {
     const walkDocs = (list, depth) => list.forEach(d => {
       const kids = this.docChildren(d.id);
       const key = 'd:' + d.id;
-      const active = s.page === 'doc' && s.docId === d.id;
+      const active = (s.page === 'doc' || s.page === 'edit') && s.docId === d.id;
       items.push(html`
         <button type="button" key=${key} class=${'nav-item folder tree-doc' + (active ? ' active' : '')} title=${d.title} style=${pad(depth)}
-          onClick=${() => { this.go('doc', { docId: d.id }); if (kids.length && s.openNodes[key] === undefined) this.toggleNode(key, true); }}>
+          onClick=${() => { this.go('doc', { docId: d.id }); if (kids.length) this.toggleNode(key, true); }}>
           <span class="ms">${kids.length ? 'auto_stories' : 'description'}</span>
           ${expanded && html`<span class="grow">${d.title}</span>`}
           ${chev(key, kids.length > 0)}
@@ -652,7 +657,7 @@ class App extends Component {
       const active = s.page === 'docs' && s.folder === f.id;
       items.push(html`
         <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '')} title=${this.folderPath(f.id)} style=${pad(depth)}
-          onClick=${() => { this.go('docs', { folder: f.id, tag: null, q: '' }); if (s.openNodes[f.id] === undefined) this.toggleNode(f.id, true); }}>
+          onClick=${() => { this.go('docs', { folder: f.id, tag: null, q: '' }); this.toggleNode(f.id, true); }}>
           <span class="ms">${f.icon}</span>
           ${expanded && html`<span class="grow">${f.name}</span>`}
           ${expanded && html`<span class="count">${count}</span>`}

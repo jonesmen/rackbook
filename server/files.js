@@ -139,7 +139,8 @@ function validSignature(id, e, sig) {
 }
 
 // Alle /files/<id>-Verweise in einem Text
-export const FILE_REF = /\/files\/([A-Za-z0-9_-]{20})\b/g;
+// Kein \b am Ende: IDs dürfen auf „-“ enden (base64url)
+export const FILE_REF = /\/files\/([A-Za-z0-9_-]{20})(?![A-Za-z0-9_-])/g;
 export function fileRefs(text) {
   const out = new Set();
   for (const m of String(text || '').matchAll(FILE_REF)) out.add(m[1]);

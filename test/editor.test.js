@@ -11,7 +11,7 @@ process.env.RATE_LIMIT_AUTH = '1000';
 
 const { createApp, initDatabase, housekeeping } = await import('../server/app.js');
 const { db } = await import('../server/db.js');
-const { sniff } = await import('../server/files.js');
+const { sniff, fileRefs } = await import('../server/files.js');
 const { parse, serialize, md, inline, embedInfo } = await import('../public/js/md.js');
 
 let server, base;
@@ -117,6 +117,12 @@ test('Einbettungen: Anbieter werden erkannt und auf Einbett-URLs umgeschrieben',
   assert.match(embedInfo('https://www.figma.com/design/abc/Name').src, /^https:\/\/www\.figma\.com\/embed\?/);
   assert.equal(embedInfo('http://example.com'), null);
   assert.equal(embedInfo('javascript:alert(1)'), null);
+});
+
+test('Dateiverweise werden auch bei IDs mit „-“ oder „_“ am Rand erkannt', () => {
+  const ids = ['abcdefghijklmnopqrs-', '-bcdefghijklmnopqrst', 'abcdefghijklmnopqrs_'];
+  const text = `![a](/files/${ids[0]}) ::pdf {"src":"/files/${ids[1]}"} [x](/files/${ids[2]}?download) /files/zuLangeIDzuLangeIDzuLange`;
+  assert.deepEqual([...fileRefs(text)].sort(), ids.slice().sort());
 });
 
 test('Datei-Typ wird anhand des Inhalts erkannt, nicht anhand des Namens', () => {
