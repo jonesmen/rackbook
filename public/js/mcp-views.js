@@ -7,6 +7,7 @@ export const SCOPE_INFO = {
   write: { label: 'Schreiben', desc: 'Dokumente anlegen und bearbeiten (versioniert)', icon: 'edit_note' },
   delete: { label: 'Löschen', desc: 'Dokumente in den Papierkorb verschieben', icon: 'delete' },
   folders: { label: 'Ordner', desc: 'Neue Ordner anlegen', icon: 'create_new_folder' },
+  files: { label: 'Dateien', desc: 'Dateien hochladen (Bilder, PDFs, Anhänge); lesen ist mit „Lesen“ erlaubt', icon: 'upload_file' },
 };
 
 function copyText(app, text, msg) {
@@ -157,6 +158,7 @@ export function McpAdmin({ app }) {
       <${Row} k="allowWrite" title="Schreiben erlauben" desc="KI darf Dokumente anlegen und bearbeiten (jede Änderung wird versioniert)" />
       <${Row} k="allowDelete" title="Löschen erlauben" desc="KI darf Dokumente in den Papierkorb verschieben" />
       <${Row} k="allowFolders" title="Ordner anlegen erlauben" desc="KI darf neue Ordner erstellen" />
+      <${Row} k="allowFiles" title="Datei-Uploads erlauben" desc="KI darf Bilder, PDFs und Anhänge hochladen (max. 20 MB, Limit aus Editor & Medien gilt zusätzlich). Lesen hochgeladener Dateien ist mit dem Leserecht möglich." />
       <div class="set-row static">
         <div><div class="t">Maximale Token-Laufzeit</div><div class="s">In Tagen, 0 = unbegrenzt</div></div>
         <input class="input" type="number" min="0" max="3650" style=${{ width: '90px' }} value=${s.maxTokenDays} onChange=${e => save({ maxTokenDays: Number(e.target.value) })} />

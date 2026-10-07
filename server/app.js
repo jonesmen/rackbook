@@ -10,7 +10,7 @@ import meRoutes from './routes/me.js';
 import docRoutes, { insertDoc } from './routes/docs.js';
 import adminRoutes from './routes/admin.js';
 import { DEFAULT_FOLDERS, sampleDocs } from './seed.js';
-import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint } from './mcp.js';
+import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint, hasValidToken } from './mcp.js';
 import { shareRoutes, publicRoutes, getShareSettings } from './routes/shares.js';
 import { fileApi, serveFile, getEditorSettings, cleanupFiles, editorCspExtra } from './files.js';
 import { syncedApi, cleanupSynced } from './synced.js';
@@ -51,7 +51,10 @@ export function createApp() {
   app.get('/healthz', (req, res) => { db.prepare('SELECT 1').get(); res.json({ status: 'ok' }); });
 
   // MCP-Server für KI-Assistenten (Bearer-Token, keine Cookies → eigener Pfad ohne CSRF/Session)
-  app.all('/mcp', express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 3) / 1048576)) + 'mb' }), (req, res, next) => {
+  // Gültiges Token → größere Anfragen erlaubt (Datei-Uploads, Base64); sonst nur kleine Anfragen parsen.
+  const mcpSmall = express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 3) / 1048576)) + 'mb' });
+  const mcpLarge = express.json({ limit: '30mb' });
+  app.all('/mcp', (req, res, next) => (hasValidToken(req) ? mcpLarge : mcpSmall)(req, res, next), (req, res, next) => {
     Promise.resolve(mcpHandler(req, res)).catch(next);
   });
 

@@ -137,7 +137,7 @@ Sicherheit:
 
 Rackbook enthält einen leichtgewichtigen [MCP](https://modelcontextprotocol.io)-Server (Streamable HTTP, zustandslos) unter `https://<rackbook>/mcp`. Damit kann eine KI (Claude Code, Claude Desktop, Cursor, VS Code, LibreChat …) Dokumentation lesen und pflegen.
 
-1. **Verwaltung → KI-Zugriff**: MCP-Server aktivieren und festlegen, was KIs maximal dürfen (Lesen, Schreiben, Löschen, Ordner anlegen), maximale Token-Laufzeit, Rate-Limit, Tag für KI-Änderungen und eigene **Hausregeln** für die KI.
+1. **Verwaltung → KI-Zugriff**: MCP-Server aktivieren und festlegen, was KIs maximal dürfen (Lesen, Schreiben, Löschen, Ordner anlegen, Dateien hochladen), maximale Token-Laufzeit, Rate-Limit, Tag für KI-Änderungen und eigene **Hausregeln** für die KI.
 2. **Einstellungen → KI-Zugriff (MCP)**: persönliches Token erstellen – mit Rechten (höchstens die eigene Rolle), optionaler Beschränkung auf Ordner und Gültigkeit. Das Token wird nur einmal angezeigt, zusammen mit fertigen Konfigurationen:
 
 ```bash
@@ -166,6 +166,8 @@ claude mcp add --transport http rackbook https://docs.example.de/mcp \
 | `update_document` | Schreiben | Komplett überarbeiten (mit Versionsprüfung) |
 | `delete_document` | Löschen | In den Papierkorb verschieben |
 | `create_folder` | Ordner | Neuen Ordner anlegen |
+| `list_files`, `read_file` | Lesen | Hochgeladene Dateien auflisten (alle oder je Dokument) und lesen – Bilder als Bild, Text/Konfigurationen/SVG/Diagramme als Text, PDFs als Ressource |
+| `upload_file` | Dateien | Datei hochladen (Base64 oder Text, max. 20 MB bzw. das Upload-Limit) und optional direkt in ein Dokument/einen Abschnitt einfügen |
 
 Dazu Vorlagen (Prompts) `dienst_dokumentieren`, `host_dokumentieren`, `runbook_erstellen`, `dokumentation_pruefen` und Ressourcen (`rackbook://guide`, `rackbook://doc/{id}`).
 
