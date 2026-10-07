@@ -1,3 +1,4 @@
+import { TemplatesPanel } from './templates-views.js';
 import { html, useState, useEffect } from '/vendor/preact-htm.js';
 import { api } from './api.js';
 import { McpPanel, McpAdmin } from './mcp-views.js';
@@ -272,6 +273,7 @@ export function SettingsPage({ app }) {
       <${SecurityPanel} app=${app} />
       <${SharesPanel} app=${app} />
       <${McpPanel} app=${app} />
+      ${app.canEdit() && html`<${TemplatesPanel} app=${app} />`}
       ${app.canEdit() && html`<${FoldersPanel} app=${app} />`}
       ${app.canEdit() && html`<${TrashPanel} app=${app} />`}
       <${DataPanel} app=${app} />
@@ -498,7 +500,7 @@ const AUDIT_LABEL = {
   'user.2fa_disabled': '2FA deaktiviert', 'session.revoked': 'Sitzung beendet', 'session.revoked_all': 'Alle anderen Sitzungen beendet',
   'admin.user_created': 'Benutzer angelegt', 'admin.user_updated': 'Benutzer geändert', 'admin.password_reset': 'Passwort zurückgesetzt',
   'admin.2fa_reset': '2FA zurückgesetzt', 'admin.sessions_revoked': 'Sitzungen eines Benutzers beendet', 'admin.user_deleted': 'Benutzer gelöscht',
-  'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.editor_updated': 'Editor-Einstellungen geändert', 'file.uploaded': 'Datei hochgeladen', 'synced.created': 'Synchronisierten Block erstellt', 'admin.backup_exported': 'Backup exportiert', 'admin.backup_restored': 'Backup eingespielt',
+  'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.editor_updated': 'Editor-Einstellungen geändert', 'file.uploaded': 'Datei hochgeladen', 'synced.created': 'Synchronisierten Block erstellt', 'template.created': 'Vorlage erstellt', 'template.updated': 'Vorlage geändert', 'template.deleted': 'Vorlage gelöscht', 'asset.created': 'Inventar-Eintrag angelegt', 'asset.updated': 'Inventar-Eintrag geändert', 'asset.deleted': 'Inventar-Eintrag gelöscht', 'admin.backup_exported': 'Backup exportiert', 'admin.backup_restored': 'Backup eingespielt',
   'admin.sample_data': 'Beispieldaten geladen', 'doc.created': 'Dokument erstellt', 'doc.updated': 'Dokument geändert', 'doc.deleted': 'Dokument gelöscht',
   'doc.restored': 'Dokument wiederhergestellt', 'doc.purged': 'Dokument endgültig gelöscht', 'doc.reviewed': 'Als geprüft markiert',
   'doc.imported': 'Dokumente importiert', 'doc.revision_restored': 'Version wiederhergestellt', 'folder.created': 'Ordner angelegt',

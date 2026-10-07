@@ -240,7 +240,7 @@ test('CSP: Einbettungen nur, wenn erlaubt', async () => {
 
 test('Komplett-Backup enthält Dateien und synchronisierte Blöcke und lässt sich einspielen', async () => {
   const b = await admin('GET', '/admin/backup?files');
-  assert.equal(b.data.format, 3);
+  assert.equal(b.data.format, 4);
   assert.ok(b.data.files.some(f => f.id === ids.png.id && f.data));
   assert.ok(b.data.synced.some(s => s.id === ids.synced));
   // Datei löschen und aus dem Backup wiederherstellen

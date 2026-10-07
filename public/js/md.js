@@ -17,7 +17,10 @@ export const CALLOUTS = {
   caution: { label: 'Achtung', icon: 'dangerous' },
 };
 export const STATUS_COLORS = ['gray', 'blue', 'green', 'yellow', 'orange', 'red', 'purple'];
-const LEAF = ['image', 'video', 'audio', 'pdf', 'file', 'embed', 'drawio', 'excalidraw', 'subpages', 'synced', 'pagebreak'];
+const LEAF = ['image', 'video', 'audio', 'pdf', 'file', 'embed', 'drawio', 'excalidraw', 'subpages', 'synced', 'pagebreak', 'asset'];
+export const ASSET_KINDS = { host: 'Server', vm: 'VM', container: 'Container', device: 'Gerät', service: 'Dienst', network: 'Netzwerk' };
+export const ASSET_ICONS = { host: 'dns', vm: 'computer', container: 'deployed_code', device: 'router', service: 'apps', network: 'lan' };
+export const ASSET_STATUS = { active: ['Aktiv', 'green'], planned: ['Geplant', 'blue'], maintenance: ['Wartung', 'orange'], retired: ['Außer Betrieb', 'gray'] };
 const FENCED = ['math', 'mermaid', 'kanban', 'base'];
 
 let seq = 0;
@@ -240,10 +243,10 @@ export function parse(src, lineOffset = 0) {
     // Einzeldirektiven
     if ((m = l.match(/^\s*::([a-z]+)\s*(\{.*\})?\s*$/)) && LEAF.includes(m[1])) {
       const data = parseJson(m[2] || '');
-      if (data && (m[1] !== 'synced' || /^[A-Za-z0-9_-]{8,40}$/.test(String(data.id || '')))) {
+      if (data && (!['synced', 'asset'].includes(m[1]) || /^[A-Za-z0-9_-]{4,40}$/.test(String(data.id || '')))) {
         const b = { ...data, id: bid(), type: m[1] };
         delete b.text; delete b.children; delete b.cols; delete b.rows;
-        if (b.type === 'synced') b.ref = String(data.id);
+        if (b.type === 'synced' || b.type === 'asset') b.ref = String(data.id);
         out.push(b);
         i++; continue;
       }
@@ -351,6 +354,7 @@ export function serialize(blocks) {
       case 'embed': s = directive('embed', pick(b, ['url', 'height'])); break;
       case 'drawio': case 'excalidraw': s = directive(b.type, pick(b, ['src'])); break;
       case 'synced': s = directive('synced', { id: b.ref }); break;
+      case 'asset': s = b.ref ? directive('asset', { id: b.ref }) : directive('asset', {}); break;
       case 'footnote': s = `[^${b.ref}]: ` + String(b.text || '').replace(/\n/g, ' '); break;
       case 'toggle': s = `:::toggle ${String(b.text || '').replace(/\n/g, ' ')}\n${serialize(b.children)}\n:::`; break;
       case 'columns': s = ':::columns\n' + (b.cols || []).map(c => `:::column\n${serialize(c)}\n:::`).join('\n') + '\n:::'; break;
@@ -408,6 +412,23 @@ export function baseCellHtml(col, v, ctx) {
   }
 }
 const sortKey = (col, v) => (col.type === 'number' ? (Number(v) || 0) : col.type === 'checkbox' ? (v ? 1 : 0) : String(v ?? '').toLowerCase());
+
+// Inventar-Karte (::asset) mit den wichtigsten Angaben
+export function assetCard(id, ctx) {
+  const a = ctx.assets && ctx.assets[id];
+  if (!a) return id ? `<div class="md-media-missing"><span class="ms">inventory_2</span>Inventar-Eintrag nicht gefunden</div>` : '';
+  const st = ASSET_STATUS[a.status] || ASSET_STATUS.active;
+  const d = a.data || {};
+  const rows = [
+    ['Netz', d.cidr && `<code class="md-code">${esc(d.cidr)}</code>`], ['VLAN', d.vlan && esc(d.vlan)], ['Gateway', d.gateway && `<code class="md-code">${esc(d.gateway)}</code>`],
+    ['IP', (a.ips || []).length && a.ips.map(i => `<code class="md-code">${esc(i.address)}</code>`).join(' ')],
+    ['System', d.os && esc(d.os)], ['Hardware', d.hardware && esc(d.hardware)], ['Standort', d.location && esc(d.location)], ['Ports', d.ports && esc(d.ports)],
+    ['URL', d.url && /^https?:\/\//i.test(d.url) && `<a href="${esc(d.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(d.url.replace(/^https?:\/\//, ''))}</a>`],
+    ['Läuft auf', a.parentName && esc(a.parentName)],
+  ].filter(([, v]) => v);
+  const head = `<span class="ms md-asset-i">${ASSET_ICONS[a.kind] || 'inventory_2'}</span><span class="md-asset-n">${esc(a.name)}</span><span class="md-asset-k">${esc(ASSET_KINDS[a.kind] || a.kind)}</span><span class="md-status c-${st[1]}">${st[0]}</span>`;
+  return `<div class="md-asset">${ctx.assetLinks === false ? `<div class="md-asset-h">${head}</div>` : `<a class="md-asset-h" href="/inventory/${esc(encodeURIComponent(a.id))}">${head}</a>`}${d.description ? `<div class="md-asset-d">${esc(d.description)}</div>` : ''}${rows.length ? `<dl class="md-asset-f">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}</div>`;
+}
 
 function renderBlock(b, ctx, st) {
   switch (b.type) {
@@ -475,6 +496,7 @@ function renderBlock(b, ctx, st) {
       const list = ctx.subpages || [];
       return `<div class="md-subpages">${list.length ? list.map(p => `<a class="md-subpage" href="${esc(p.href || '/doc/' + encodeURIComponent(p.id))}"><span class="ms">description</span>${esc(p.title)}</a>`).join('') : '<div class="md-empty">Keine Unterseiten.</div>'}</div>`;
     }
+    case 'asset': return assetCard(b.ref, ctx);
     case 'synced': {
       const content = ctx.synced && ctx.synced[b.ref];
       if (content === undefined || ctx.inSynced) return `<div class="md-synced missing"><span class="ms">sync_disabled</span>Synchronisierter Block nicht verfügbar</div>`;

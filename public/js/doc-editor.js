@@ -5,6 +5,7 @@ import { renderMd, plain } from './md.js';
 import { hydrate, baseSortClick } from './hydrate.js';
 import { BlockEditor } from './editor/editor.js';
 import { fmtDate, wordsOf, fmtWords, initials } from './util.js';
+import { applyPlaceholders } from './templates-views.js';
 
 // Gerendertes Markdown (Lesen): Mathe/Mermaid nachladen, Datenbanken sortierbar
 export class MdView extends Component {
@@ -42,9 +43,12 @@ export function editorEnv(app, getDocId) {
     get meta() { return app.state.meta.editor || {}; },
     upload: file => uploadFile(file, getDocId()),
     mediaUrl: src => src,
-    renderHtml: blocks => renderMd(blocks, app.renderCtx(getDocId())).html,
+    renderHtml: (blocks, extra) => renderMd(blocks, { ...app.renderCtx(getDocId()), ...(extra || {}) }).html,
     subpages: () => (getDocId() ? app.docChildren(getDocId()) : []),
-    newSubpage: () => { const id = getDocId(); if (id) app.openEditor(null, null, false, id); },
+    newSubpage: () => { const id = getDocId(); if (id) app.newDocument(null, id); },
+    assets: () => app.state.assets,
+    docs: () => app.state.docs,
+    folderPath: id => app.folderPath(id),
     flash: (m, err) => app.flash(m, null, err),
     synced: {
       get: ref => (app.state.synced[ref] ? app.state.synced[ref].content : undefined),
@@ -64,7 +68,13 @@ export class DocEditor extends Component {
     const firstFolder = props.app.state.folders[0] ? props.app.state.folders[0].id : '';
     this.state = d
       ? { id: d.id, version: d.version, title: d.title, folder: d.folder, parent: d.parent || '', tags: d.tags.join(', '), content: d.content, status: 'saved', key: 1, raw: false, conflict: null }
-      : { id: null, version: 0, title: '', folder: p ? p.folder : (props.folder && props.app.state.folders.some(f => f.id === props.folder) ? props.folder : firstFolder), parent: p ? p.id : '', tags: p ? p.tags.join(', ') : '', content: '', status: 'saved', key: 1, raw: false, conflict: null };
+      : {
+        id: null, version: 0, title: '', folder: p ? p.folder : (props.folder && props.app.state.folders.some(f => f.id === props.folder) ? props.folder : firstFolder), parent: p ? p.id : '',
+        // Aus einer Vorlage: Inhalt und Tags übernehmen, Titel als Vorschlag
+        tags: [...new Set([...(p ? p.tags : []), ...(props.template ? props.template.tags : [])])].join(', '),
+        content: props.template ? applyPlaceholders(props.template.content) : '', titleHint: props.template ? props.template.title : '',
+        status: 'saved', key: 1, raw: false, conflict: null,
+      };
     this.env = editorEnv(props.app, () => this.state.id);
     this.titleRef = { current: null };
     this.edRef = { current: null };
@@ -99,7 +109,7 @@ export class DocEditor extends Component {
     if (!s.id && !s.title.trim() && !s.content.trim()) { this.setState({ status: 'saved' }); return; }
     this.saving = true;
     this.setState({ status: 'saving' });
-    const body = { title: s.title || 'Unbenanntes Dokument', folder: s.folder, parent: s.parent || '', tags: s.tags, content: s.content };
+    const body = { title: s.title || s.titleHint || 'Unbenanntes Dokument', folder: s.folder, parent: s.parent || '', tags: s.tags, content: s.content };
     const { app } = this.props;
     try {
       let r;
@@ -144,7 +154,7 @@ export class DocEditor extends Component {
             <button type="button" class="btn btn-ghost sm" onClick=${() => this.takeTheirs()}>Deren Version laden</button>
             <button type="button" class="btn btn-primary sm" onClick=${() => this.keepMine()}>Meine Version speichern</button>
           </div>`}
-        <textarea ref=${this.titleRef} class="title-edit" rows="1" value=${s.title} placeholder="Neue Seite" maxlength="200" aria-label="Titel"
+        <textarea ref=${this.titleRef} class="title-edit" rows="1" value=${s.title} placeholder=${s.titleHint || 'Neue Seite'} maxlength="200" aria-label="Titel"
           onInput=${e => { this.set({ title: e.target.value.replace(/\n/g, ' ') }); e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
           onKeyDown=${e => { if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); const first = document.querySelector('.ed-root .ed-text'); if (first) first.focus(); } }}></textarea>
         <div class="doc-byline">

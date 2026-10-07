@@ -33,6 +33,7 @@ export const SLASH_ITEMS = [
   { key: 'drawio', group: 'Erweitert', icon: 'schema', label: 'Draw.io', desc: 'Diagramm mit dem Draw.io-Editor.', kw: 'drawio diagrams.net diagramm netzwerkplan' },
   { key: 'excalidraw', group: 'Erweitert', icon: 'draw', label: 'Excalidraw', desc: 'Handgezeichnete Skizze.', kw: 'excalidraw skizze zeichnung whiteboard' },
   { key: 'subpages', group: 'Erweitert', icon: 'account_tree', label: 'Unterseiten', desc: 'Liste aller Unterseiten dieser Seite.', kw: 'unterseiten subpages kinder' },
+  { key: 'asset', group: 'Erweitert', icon: 'inventory_2', label: 'Inventar-Eintrag', desc: 'Karte mit Angaben aus dem Inventar (IPs, System …).', kw: 'inventar host server vm ip asset gerät netzwerk' },
   { key: 'synced', group: 'Erweitert', icon: 'sync', label: 'Synchronisierter Block', desc: 'Inhalt, der auf mehreren Seiten gleich bleibt.', kw: 'synced sync synchron wiederverwenden' },
 
   { key: 'date', group: 'Inline', icon: 'event', label: 'Datum', desc: 'Datum einfügen.', kw: 'date datum tag heute' },

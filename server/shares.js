@@ -7,6 +7,7 @@
 // - Bei JEDEM Aufruf wird neu geprüft: Freigaben aktiviert, nicht widerrufen/abgelaufen, Ersteller aktiv
 //   und (noch) berechtigt. Nicht-Admins geben nur eigene Inhalte frei – auch innerhalb eines Ordners.
 import { getSynced, syncedRefs } from './synced.js';
+import { getAsset } from './assets.js';
 import { fileRefs, signedFileUrl, getEditorSettings } from './files.js';
 import { db, getSetting, setSetting } from './db.js';
 import { HttpError, randomToken, sha256, hashPassword, verifyPassword, dummyVerify, RateLimiter } from './security.js';
@@ -163,8 +164,16 @@ export async function resolvePublic(token, password, ip) {
   const files = {};
   for (const id of fileIds) if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) files[id] = signedFileUrl(id);
   const ed = getEditorSettings();
+  // Inventar-Karten (::asset) in freigegebenen Dokumenten – ohne interne Notizen und Verknüpfungen
+  const assets = {};
+  for (const c of [...docs.map(d => d.content), ...Object.values(synced)]) {
+    for (const m of String(c).matchAll(/^::asset\s+\{\s*"id"\s*:\s*"([A-Za-z0-9_-]{4,40})"/gm)) {
+      const a = getAsset(m[1]);
+      if (a) { const { notes, ...data } = a.data; assets[a.id] = { id: a.id, kind: a.kind, name: a.name, status: a.status, ips: a.ips, tags: a.tags, data }; }
+    }
+  }
   return {
-    synced, files, embeds: ed.embeds,
+    synced, files, assets, embeds: ed.embeds,
     kind: sh.kind, root: target.id, title: target.title, expiresAt: sh.expires_at,
     folders: folders.map(f => ({ id: f.id, name: f.name, icon: f.icon, hue: f.hue, parent: f.id === target.id ? null : f.parent_id })),
     // Elternverweise außerhalb der Freigabe werden gekappt, damit nichts Fremdes durchscheint.

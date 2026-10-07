@@ -1,6 +1,8 @@
 // Leichtgewichtiger MCP-Server (Model Context Protocol, Streamable HTTP, zustandslos).
 // KI-Assistenten (Claude, ChatGPT, Cursor …) können darüber Dokumentation lesen und pflegen.
 import { getSynced, syncedRefs } from './synced.js';
+import { getTemplate, listTemplates, applyPlaceholders } from './templates.js';
+import { KINDS, STATUSES, FIELDS, listAssets, getAsset, createAsset, updateAsset, ipOverview, ipOverviewText, isIp, parseCidr, ipToInt } from './assets.js';
 import { getEditorSettings, storeBuffer, getFileRow, readFileBuffer, fileSnippet, fileRefs, fileDto } from './files.js';
 import { fmtSize } from '../public/js/md.js';
 import { db, tx, getSetting, setSetting } from './db.js';
@@ -255,6 +257,8 @@ Der Inhalt ist Markdown; im Web-Editor erscheint jeder Absatz als Block. Verwend
 - Kanban-Board: \`\`\`kanban mit JSON \`{"columns":[{"title":"Offen","color":"gray","cards":[{"title":"…","note":"…"}]}]}\`
 - Einbettung (nur wenn der Benutzer es wünscht): \`::embed {"url":"https://…"}\` (YouTube, Vimeo, Loom, Figma, Miro, Airtable, Typeform, Google Drive/Sheets, beliebige https-Seite)
 - Dateien: \`list_files\` zeigt hochgeladene Bilder, PDFs und Anhänge (auch je Dokument), \`read_file\` liefert ihren Inhalt (Bilder als Bild, Text/Konfigurationen/SVG als Text, PDFs als Ressource).${ctx.scopes.has('files') ? ' Mit `upload_file` lädst du Dateien hoch (Base64 oder Text, max. 20 MB) – mit `document` direkt ins Dokument; sonst das gelieferte Markdown selbst einfügen. Netzpläne lieber als ```mermaid, Screenshots/Fotos als Bild.' : ''}
+- Vorlagen: \`list_templates\` zeigt Vorlagen für Dienst, Host, Runbook, Projekt, Netzwerk, Störung und eigene – neue Dokumente möglichst mit \`create_document\` + \`template\` anlegen und dann füllen.
+- Inventar${ctx.folders.length ? ' (für dieses Token nicht verfügbar)' : ''}: Hosts, VMs, Container, Geräte, Dienste und Netzwerke sind als strukturierte Einträge erfasst (\`list_assets\`, \`get_asset\`${ctx.scopes.has('write') ? ', \`save_asset\`' : ''}, \`ip_overview\`). IPs, Hardware und „läuft auf“ gehören ins Inventar, Erklärungen und Abläufe ins Dokument; beides über \`doc\` verknüpfen und im Dokument mit \`::asset {"id":"as_…"}\` als Karte einbinden. Vor dem Vergeben einer IP \`ip_overview\` prüfen.
 - Nicht verändern oder neu erfinden: Zeilen mit \`::image\`/\`![…](/files/…)\`, \`::video\`, \`::audio\`, \`::pdf\`, \`::file\`, \`::drawio\`, \`::excalidraw\`, \`::synced\` sowie \`\`\`base-Blöcke – sie verweisen auf hochgeladene Dateien, Zeichnungen bzw. synchronisierte Inhalte. Beim Umschreiben eines Dokuments unverändert übernehmen.
 - Kein HTML.
 
@@ -336,12 +340,17 @@ const TOOLS = [
       const m = meta(d);
       const kids = children(d.id);
       const synced = getSynced(syncedRefs(d.content));
+      const backlinks = db.prepare("SELECT id, title, folder_id FROM documents WHERE deleted_at IS NULL AND id <> ? AND content LIKE ?").all(d.id, `%/doc/${d.id}%`)
+        .filter(x => folderOk(ctx, x.folder_id) && new RegExp(`/doc/${d.id}(?![A-Za-z0-9_-])`).test(db.prepare('SELECT content FROM documents WHERE id = ?').get(x.id).content)).map(x => ({ id: x.id, title: x.title }));
+      const linkedAssets = listAssets().filter(x => x.doc === d.id).map(x => ({ id: x.id, name: x.name, kind: x.kind }));
       const crumbs = docAncestors(d.id).reverse().map(id => `${docTitle(id)} (\`${id}\`)`).join(' › ');
       return {
         text: `# ${d.title}\nID: ${d.id} · Ordner: ${m.folderPath} (\`${d.folder_id}\`)${crumbs ? ` · Elternseiten: ${crumbs}` : ''} · Tags: ${m.tags.join(', ') || '–'} · Version: ${d.version} · Geändert: ${m.updatedAt}${m.updatedBy ? ' von ' + m.updatedBy : ''}`
-          + `${kids.length ? `\nUnterseiten: ${kids.map(k => `${k.title} (\`${k.id}\`)`).join(', ')}` : ''}\n\n${d.content}`
+          + `${kids.length ? `\nUnterseiten: ${kids.map(k => `${k.title} (\`${k.id}\`)`).join(', ')}` : ''}`
+          + `${backlinks.length ? `\nVerlinkt von: ${backlinks.map(k => `${k.title} (\`${k.id}\`)`).join(', ')}` : ''}`
+          + `${linkedAssets.length ? `\nInventar: ${linkedAssets.map(k => `${k.name} (${KINDS[k.kind]}, \`${k.id}\`)`).join(', ')}` : ''}\n\n${d.content}`
           + (Object.keys(synced).length ? `\n\n---\nInhalt der eingebundenen synchronisierten Blöcke (nur lesen, nicht in das Dokument kopieren):\n${Object.entries(synced).map(([id, c]) => `[${id}]\n${c}`).join('\n\n')}` : ''),
-        structured: { ...m, content: d.content, children: kids, synced },
+        structured: { ...m, content: d.content, children: kids, backlinks, assets: linkedAssets, synced },
       };
     },
   },
@@ -363,9 +372,17 @@ const TOOLS = [
       title: str('Kurzer, eindeutiger Titel'), folder: str('Ordner-ID (siehe rackbook_overview); bei `parent` nicht nötig'),
       parent: str('Optional: ID des Hauptdokuments, unter dem diese Seite als Unterseite erscheint'),
       tags: { type: 'array', items: { type: 'string' }, description: '2–5 kleingeschriebene Tags' }, content: str('Inhalt in Markdown'),
-    }, required: ['title', 'content'] },
+      template: str('Optional: Vorlagen-ID (siehe list_templates). Ohne `content` wird der Vorlageninhalt übernommen; Tags der Vorlage werden ergänzt.'),
+    }, required: ['title'] },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     run(ctx, a, req) {
+      if (a.template) {
+        const t = getTemplate(a.template);
+        if (!t) throw new ToolError(`Vorlage „${a.template}“ nicht gefunden (siehe list_templates).`);
+        if (!a.content) a.content = applyPlaceholders(t.content);
+        a.tags = [...(a.tags || []), ...t.tags];
+      }
+      if (!a.content) throw new ToolError('Bitte `content` oder `template` angeben.');
       const p = a.parent ? parentFor(ctx, null, a.parent) : { parent: null, folder: null };
       const folder = p.folder || a.folder;
       if (!folder) throw new ToolError('Bitte `folder` oder `parent` angeben.');
@@ -595,7 +612,125 @@ const TOOLS = [
       return { text: `Datei \`${f.id}\` (${f.name}, ${f.mime}, ${fmtSize(f.size)}) hochgeladen.\nZum Einbinden in ein Dokument diese Zeile verwenden (eigener Absatz):\n${snippet}`, structured: { file: f, markdown: snippet } };
     },
   },
+  {
+    name: 'list_templates', scope: 'read', title: 'Vorlagen auflisten',
+    description: 'Listet die Dokumentvorlagen (Dienst, Host, Runbook, Projekt … sowie eigene). Mit create_document und `template` ein neues Dokument daraus anlegen; mit `full: true` auch den Inhalt.',
+    inputSchema: { type: 'object', properties: { full: { type: 'boolean', description: 'Inhalt der Vorlagen mitliefern' } } },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      const list = listTemplates();
+      return {
+        text: list.map(t => `- \`${t.id}\` ${t.name}${t.builtin ? ' (mitgeliefert)' : ''} – ${t.description || ''}${a.full ? `\n\n${t.content}\n` : ''}`).join('\n'),
+        structured: { templates: list.map(t => ({ id: t.id, name: t.name, description: t.description, tags: t.tags, builtin: t.builtin, ...(a.full ? { content: t.content } : {}) })) },
+      };
+    },
+  },
+  {
+    name: 'list_assets', scope: 'read', title: 'Inventar auflisten',
+    description: `Listet Inventar-Einträge (Typen: ${Object.entries(KINDS).map(([k, v]) => `${k}=${v}`).join(', ')}) mit IPs, Status und „läuft auf“. Filter nach Typ, Suchbegriff (Name, IP, Tags, Felder) oder übergeordnetem Eintrag.`,
+    inputSchema: { type: 'object', properties: { kind: str('Optional: Typ', { enum: Object.keys(KINDS) }), query: str('Optional: Suche in Name, IPs, Tags und Feldern'), parent: str('Optional: nur Einträge, die auf diesem Eintrag laufen (ID)') } },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      noFolderLimit(ctx);
+      const all = listAssets();
+      const byId = new Map(all.map(x => [x.id, x]));
+      let list = all;
+      if (a.kind) list = list.filter(x => x.kind === a.kind);
+      if (a.parent) list = list.filter(x => x.parent === a.parent);
+      if (a.query) {
+        const q = String(a.query).trim().toLowerCase();
+        // IP-Suche: genaue Adresse oder Netzwerk, das die Adresse enthält
+        if (isIp(q)) {
+          list = list.filter(x => x.ips.some(i => i.address.toLowerCase() === q)
+            || (x.kind === 'network' && /^\d+\.\d+\.\d+\.\d+$/.test(q) && parseCidr(x.data.cidr) && ipToInt(q) >= parseCidr(x.data.cidr).start && ipToInt(q) <= parseCidr(x.data.cidr).end));
+        } else list = list.filter(x => [x.name, ...x.ips.map(i => i.address), ...x.tags, ...Object.values(x.data)].join(' ').toLowerCase().includes(q));
+      }
+      return {
+        text: list.length ? list.map(x => `- \`${x.id}\` ${x.name} (${KINDS[x.kind]}${x.status !== 'active' ? `, ${STATUSES[x.status]}` : ''})${x.ips.length ? ` · ${x.ips.map(i => i.address).join(', ')}` : ''}${x.data.cidr ? ` · ${x.data.cidr}` : ''}${x.parent ? ` · läuft auf ${byId.get(x.parent)?.name || x.parent}` : ''}`).join('\n') : 'Keine Inventar-Einträge gefunden.',
+        structured: { assets: list },
+      };
+    },
+  },
+  {
+    name: 'get_asset', scope: 'read', title: 'Inventar-Eintrag lesen',
+    description: 'Liefert einen Inventar-Eintrag mit allen Feldern, IPs, übergeordnetem Eintrag, darauf laufenden Einträgen und verknüpftem Dokument.',
+    inputSchema: { type: 'object', properties: { id: str('ID des Eintrags (as_…)') }, required: ['id'] },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      noFolderLimit(ctx);
+      const x = getAsset(a.id);
+      if (!x) throw new ToolError(`Inventar-Eintrag „${a.id}“ nicht gefunden.`);
+      const kids = listAssets().filter(k => k.parent === x.id);
+      const parent = x.parent ? getAsset(x.parent) : null;
+      const doc = x.doc && db.prepare('SELECT id, title, folder_id FROM documents WHERE id = ? AND deleted_at IS NULL').get(x.doc);
+      const lines = [`# ${x.name} (${KINDS[x.kind]}, ${STATUSES[x.status]})`, `ID: \`${x.id}\`${parent ? ` · läuft auf ${parent.name} (\`${parent.id}\`)` : ''}${x.tags.length ? ` · Tags: ${x.tags.join(', ')}` : ''}`];
+      if (x.ips.length) lines.push('', 'IPs:', ...x.ips.map(i => `- ${i.address}${i.mac ? ` (MAC ${i.mac})` : ''}${i.note ? ` – ${i.note}` : ''}`));
+      const fields = Object.entries(x.data).filter(([k]) => k !== 'notes');
+      if (fields.length) lines.push('', ...fields.map(([k, v]) => `- ${k}: ${v}`));
+      if (x.data.notes) lines.push('', 'Notizen:', x.data.notes);
+      if (kids.length) lines.push('', 'Läuft darauf:', ...kids.map(k => `- ${k.name} (${KINDS[k.kind]}, \`${k.id}\`)`));
+      if (doc && folderOk(ctx, doc.folder_id)) lines.push('', `Dokumentation: ${doc.title} (\`${doc.id}\`)`);
+      return { text: lines.join('\n'), structured: { ...x, children: kids.map(k => ({ id: k.id, name: k.name, kind: k.kind })) } };
+    },
+  },
+  {
+    name: 'save_asset', scope: 'write', title: 'Inventar-Eintrag anlegen/ändern',
+    description: `Legt einen Inventar-Eintrag an (ohne \`id\`) oder ändert ihn (mit \`id\`, nur übergebene Felder). Vorher mit list_assets prüfen, ob es ihn schon gibt. \`data\`-Felder: ${FIELDS.join(', ')} (Netzwerke: cidr z. B. 10.0.20.0/24, vlan, gateway, dhcp z. B. 10.0.20.100-10.0.20.200). Keine Passwörter speichern.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Optional: ID eines bestehenden Eintrags'),
+        kind: str('Typ', { enum: Object.keys(KINDS) }),
+        name: str('Name, z. B. Hostname'),
+        status: str('Status', { enum: Object.keys(STATUSES) }),
+        parent: str('Optional: ID des Eintrags, auf dem dieser läuft (z. B. VM → Server); leer = keiner'),
+        ips: { type: 'array', items: { type: 'object', properties: { address: { type: 'string' }, mac: { type: 'string' }, note: { type: 'string' } }, required: ['address'] }, description: 'IP-Adressen (ersetzt die bisherige Liste)' },
+        data: { type: 'object', description: 'Felder (nur übergebene werden geändert; leerer Text löscht ein Feld)', additionalProperties: { type: 'string' } },
+        tags: { type: 'array', items: { type: 'string' } },
+        doc: str('Optional: ID des Dokuments mit der ausführlichen Dokumentation'),
+      },
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    run(ctx, a, req) {
+      noFolderLimit(ctx);
+      if (a.doc) loadDoc(ctx, a.doc);
+      const body = { ...a };
+      delete body.id;
+      let x;
+      try {
+        if (a.id) x = updateAsset(a.id, body, ctx.user.id);
+        else {
+          if (!a.kind || !a.name) throw new ToolError('Zum Anlegen `kind` und `name` angeben.');
+          const dup = listAssets().find(y => y.kind === a.kind && y.name.toLowerCase() === String(a.name).trim().toLowerCase());
+          if (dup) throw new ToolError(`Es gibt bereits „${dup.name}“ (\`${dup.id}\`). Zum Ändern \`id\` angeben.`);
+          x = createAsset(body, ctx.user.id);
+        }
+      } catch (e) { if (e instanceof HttpError) throw new ToolError(e.message); throw e; }
+      logWrite(ctx, req, a.id ? 'asset.updated' : 'asset.created', x.id, { name: x.name, kind: x.kind });
+      const conflicts = ipOverview().conflicts.filter(c => c.assets.some(y => y.id === x.id));
+      return {
+        text: `Inventar-Eintrag „${x.name}“ ${a.id ? 'aktualisiert' : 'angelegt'} (\`${x.id}\`).${conflicts.length ? `\nAchtung, doppelt vergebene IP: ${conflicts.map(c => `${c.address} (${c.assets.map(y => y.name).join(', ')})`).join('; ')}` : ''}\nIn Dokumente einbinden mit: ::asset {"id":"${x.id}"}`,
+        structured: x,
+      };
+    },
+  },
+  {
+    name: 'ip_overview', scope: 'read', title: 'IP-Belegung',
+    description: 'Zeigt je erfasstem Netzwerk die belegten IPs, freie Adressen (nächste 10), DHCP-Bereich und doppelt vergebene IPs. Vor dem Vergeben einer neuen IP aufrufen.',
+    inputSchema: { type: 'object', properties: { network: str('Optional: Netzwerk-ID, CIDR oder Name') } },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      noFolderLimit(ctx);
+      const o = ipOverview();
+      return { text: ipOverviewText(o, a.network), structured: o };
+    },
+  },
 ];
+
+// Inventar gilt für die ganze Umgebung – nicht für Tokens, die auf Ordner beschränkt sind
+function noFolderLimit(ctx) {
+  if (ctx.folders.length) throw new ToolError('Das Inventar ist nur für Tokens ohne Ordner-Beschränkung verfügbar.');
+}
 
 // ---------- Dateien ----------
 const MCP_UPLOAD_MAX_MB = 20;

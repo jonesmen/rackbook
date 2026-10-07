@@ -86,7 +86,7 @@ function Viewer({ token, data }) {
   useEffect(() => { document.title = `${d ? d.title + ' – ' : ''}${data.title} (geteilt)`; }, [current]);
   const kidsOf = id => data.docs.filter(x => x.parent === id).sort((a, b) => a.title.localeCompare(b.title, 'de'));
   const r = d ? md(d.content, {
-    fileUrl: id => (data.files && data.files[id]) || null, embeds: data.embeds !== false, synced: data.synced || {},
+    fileUrl: id => (data.files && data.files[id]) || null, embeds: data.embeds !== false, synced: data.synced || {}, assets: data.assets || {}, assetLinks: false,
     subpages: kidsOf(d.id).map(k => ({ id: k.id, title: k.title })),
   }) : { html: '', toc: [] };
   const crumbs = [];

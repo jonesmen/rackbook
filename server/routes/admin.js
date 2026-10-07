@@ -10,6 +10,7 @@ import { checkFolderParent, checkDocParent } from '../tree.js';
 import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
 import { getMcpSettings, saveMcpSettings, listTokens, revokeToken, mcpEndpoint } from '../mcp.js';
 import { getShareSettings, saveShareSettings, listShares, revokeShare, revokeAllOfUser, activeShareCounts } from '../shares.js';
+import { exportAssets, importAssets } from '../assets.js';
 import { getEditorSettings, normDrawioUrl, exportFiles, importFile, fileStats, invalidateCsp } from '../files.js';
 
 const r = Router();
@@ -216,7 +217,9 @@ r.get('/backup', (req, res) => {
   const files = req.query.files !== undefined ? exportFiles() : undefined;
   audit(req, 'admin.backup_exported', null, { documents: documents.length, files: files ? files.length : 0 });
   res.setHeader('Content-Disposition', `attachment; filename="rackbook-backup-${new Date().toISOString().slice(0, 10)}${files ? '-komplett' : ''}.json"`);
-  res.json({ app: 'rackbook', format: 3, exportedAt: Date.now(), folders, documents, synced, ...(files ? { files } : {}) });
+  const templates = db.prepare('SELECT * FROM templates').all().map(t => ({ id: t.id, name: t.name, description: t.description, icon: t.icon, title: t.title, tags: JSON.parse(t.tags), content: t.content }));
+  const assets = exportAssets();
+  res.json({ app: 'rackbook', format: 4, exportedAt: Date.now(), folders, documents, synced, templates, assets, ...(files ? { files } : {}) });
 });
 
 r.post('/restore', (req, res) => {
@@ -275,7 +278,17 @@ r.post('/restore', (req, res) => {
       synced++;
     }
     for (const f of Array.isArray(b.files) ? b.files : []) if (importFile(f, req.user.id)) files++;
-    return { folders, created, updated, synced, files };
+    let templates = 0;
+    for (const t of Array.isArray(b.templates) ? b.templates : []) {
+      if (typeof t.id !== 'string' || !/^tpl_[A-Za-z0-9_-]{4,40}$/.test(t.id) || !t.name) continue;
+      const now = Date.now();
+      db.prepare(`INSERT INTO templates (id, name, description, icon, title, tags, content, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, icon = excluded.icon, title = excluded.title, tags = excluded.tags, content = excluded.content, updated_at = excluded.updated_at`)
+        .run(t.id, cleanName(t.name).slice(0, 80) || 'Vorlage', String(t.description || '').slice(0, 200), /^[a-z0-9_]{1,40}$/.test(t.icon) ? t.icon : 'description', String(t.title || '').slice(0, 200), JSON.stringify(normTags(t.tags)), normContent(t.content || ''), req.user.id, now, now);
+      templates++;
+    }
+    const assets = importAssets(b.assets, req.user.id);
+    return { folders, created, updated, synced, files, templates, assets };
   });
   audit(req, 'admin.backup_restored', null, result);
   res.json(result);

@@ -14,6 +14,10 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 - Gespeichert wird weiterhin **Markdown** (mit wenigen Erweiterungen) – Suche, Export und KI-Zugriff funktionieren unverändert
 - Dokumentansicht mit Inhaltsverzeichnis, kopierbaren Code-Blöcken, abhakbaren Checklisten, sortierbaren Datenbanken und Druck-/PDF-Ansicht (Seitenumbrüche)
 - Globale Volltextsuche mit Trefferhervorhebung (Titel, Inhalt, Tags, IPs, Befehle)
+- **Schnellsuche `Strg/⌘ + K`**: Dokumente, Ordner, Inventar (auch nach IP) und Befehle – per Tastatur
+- **Rückverweise**: „Verlinkt von …“ unter jedem Dokument; im Editor schlägt `[[` passende Seiten zum Verlinken vor
+- **Vorlagen** beim Anlegen (Dienst, Host, Runbook, Projekt, Netzwerk, Störung) und eigene Vorlagen – auch „Als Vorlage speichern“ aus einem Dokument
+- **Inventar**: Server, VMs, Container, Geräte, Dienste und Netzwerke als strukturierte Einträge mit IPs, Hardware und „läuft auf“; **IP-Belegung** je Netz mit freien Adressen und Warnung bei doppelt vergebenen IPs; Einträge mit Dokumenten verknüpfen und als Karte (`::asset`) einbinden
 - Benachrichtigungen für Dokumente, die länger nicht geprüft wurden („Als geprüft markieren“)
 - Versionsverlauf pro Dokument mit Wiederherstellung, Papierkorb mit „Rückgängig“
 - Erkennung gleichzeitiger Bearbeitung (kein stilles Überschreiben)
@@ -167,6 +171,9 @@ claude mcp add --transport http rackbook https://docs.example.de/mcp \
 | `delete_document` | Löschen | In den Papierkorb verschieben |
 | `create_folder` | Ordner | Neuen Ordner anlegen |
 | `list_files`, `read_file` | Lesen | Hochgeladene Dateien auflisten (alle oder je Dokument) und lesen – Bilder als Bild, Text/Konfigurationen/SVG/Diagramme als Text, PDFs als Ressource |
+| `list_templates` (+ `template` bei `create_document`) | Lesen / Schreiben | Vorlagen auflisten und Dokumente daraus anlegen |
+| `list_assets`, `get_asset`, `ip_overview` | Lesen | Inventar durchsuchen (auch nach IP), Einträge mit „läuft darauf“ lesen, freie IPs und Doppelvergaben je Netz |
+| `save_asset` | Schreiben | Inventar-Eintrag anlegen oder ändern (Tokens ohne Ordner-Beschränkung) |
 | `upload_file` | Dateien | Datei hochladen (Base64 oder Text, max. 20 MB bzw. das Upload-Limit) und optional direkt in ein Dokument/einen Abschnitt einfügen |
 
 Dazu Vorlagen (Prompts) `dienst_dokumentieren`, `host_dokumentieren`, `runbook_erstellen`, `dokumentation_pruefen` und Ressourcen (`rackbook://guide`, `rackbook://doc/{id}`).
