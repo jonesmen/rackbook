@@ -6,6 +6,12 @@ window.mermaid.initialize({
   flowchart: { htmlLabels: false }, class: { htmlLabels: false }, state: { htmlLabels: false },
 });
 let seq = 0;
+// Mermaid liefert Beschriftungen als HTML (z. B. „<br>“). Das Diagramm wird als <img> angezeigt und muss
+// daher wohlgeformtes XML sein – also einmal als HTML einlesen und als XML neu ausgeben.
+function toXml(svg) {
+  const el = new DOMParser().parseFromString(svg, 'text/html').querySelector('svg');
+  return el ? new XMLSerializer().serializeToString(el) : svg;
+}
 window.addEventListener('message', async e => {
   if (e.origin !== location.origin || e.source !== window.parent) return;
   const m = e.data || {};
@@ -13,7 +19,7 @@ window.addEventListener('message', async e => {
   const id = 'm' + (++seq);
   try {
     const { svg } = await window.mermaid.render(id, String(m.src || ''), document.getElementById('work'));
-    window.parent.postMessage({ type: 'rendered', id: m.id, svg }, location.origin);
+    window.parent.postMessage({ type: 'rendered', id: m.id, svg: toXml(svg) }, location.origin);
   } catch (err) {
     window.parent.postMessage({ type: 'rendered', id: m.id, error: String((err && err.message) || err).split('\n')[0].slice(0, 300) }, location.origin);
   } finally {
