@@ -28,8 +28,10 @@ export const bid = () => 'b' + (++seq).toString(36) + Math.random().toString(36)
 
 // ---------- URLs ----------
 export function safeHref(url) {
-  const u = String(url).trim();
+  // Steuerzeichen entfernen (Browser ignorieren sie vor dem Schema, z. B. „\x01javascript:“)
+  const u = String(url).replace(/[\u0000-\u0020\u007f]+/g, ' ').trim();
   if (/^(https?:|mailto:)/i.test(u)) return u;
+  if (/^\/[\/\\]/.test(u)) return null; // „//host“ oder „/\host“ wäre eine fremde Adresse
   if (/^(#|\/(?!\/)|\.\.?\/)/.test(u)) return u;
   if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return null; // javascript:, data:, vbscript: …
   return u;
@@ -42,6 +44,8 @@ function mediaSrc(src, ctx) {
   if (/^https:\/\//i.test(u) && ctx.embeds !== false) return u;
   return null;
 }
+// Zeichen, die eine Markdown-Adresse beenden würden, kodieren
+export const encUrl = u => String(u || '').trim().replace(/[()\s]/g, c => ({ '(': '%28', ')': '%29' }[c] || '%20'));
 export const fileId = src => (String(src || '').match(/^\/files\/([A-Za-z0-9_-]{20})/) || [])[1] || null;
 
 // ---------- Einbettungen ----------
@@ -97,13 +101,15 @@ export function embedInfo(url) {
 const RX = {
   esc: /\\([!-/:-@[-`{-~])/y,
   code: /(`+)([\s\S]*?[^`])\1(?!`)/y,
-  math: /\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$(?!\d)/y,
+  math: /\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$(?![\w$])/y,
   chip: /\{\{(date|time|status):([^{}\n]*)\}\}/y,
   fn: /\[\^([\w-]{1,30})\]/y,
-  img: /!\[([^\]\n]*)\]\(([^)\s]+)\)/y,
-  link: /\[((?:\\.|[^\]\\\n])+)\]\(([^)\s]+)\)/y,
+  img: /!\[([^\]\n]*)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/y,
+  link: /\[((?:\\.|[^\]\\\n])+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/y,
+  boldital: /\*\*\*(?![\s*])([\s\S]+?)(?<![\s*])\*\*\*(?!\*)/y,
   bold: /\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*/y,
-  ital: /\*(?![\s*])([\s\S]*?[^\s\\*])\*(?!\*)/y,
+  // schließendes * darf nicht vor einem einzelnen * stehen, wohl aber vor „**“ (kursiv direkt gefolgt von fett)
+  ital: /\*(?![\s*])([\s\S]*?[^\s\\*])\*(?!\*(?!\*))/y,
   strike: /~~(?!\s)([\s\S]+?)(?<!\s)~~/y,
 };
 const MONTHS = ['Jan.', 'Feb.', 'März', 'Apr.', 'Mai', 'Juni', 'Juli', 'Aug.', 'Sept.', 'Okt.', 'Nov.', 'Dez.'];
@@ -138,7 +144,7 @@ export function inline(src, ctx = {}, mode = 'view') {
       const t = m[2].replace(/^ (.*) $/, '$1');
       out += `<code class="md-code">${esc(t)}</code>`; i += m[0].length; continue;
     }
-    if (c === '$' && (m = at(RX.math))) {
+    if (c === '$' && !/\w/.test(s[i - 1] || '') && (m = at(RX.math))) {
       out += atom(m[0], `<span class="md-math" data-tex="${esc(m[1])}">${esc(m[1])}</span>`); i += m[0].length; continue;
     }
     if (c === '{' && (m = at(RX.chip))) { out += atom(m[0], chipHtml(m[1], m[2])); i += m[0].length; continue; }
@@ -149,7 +155,7 @@ export function inline(src, ctx = {}, mode = 'view') {
     }
     if (c === '!' && (m = at(RX.img))) {
       const src = mediaSrc(m[2], ctx);
-      out += src ? `<img class="md-inline-img" src="${esc(src)}" alt="${esc(m[1])}" loading="lazy">` : esc(m[1]);
+      out += atom(m[0], src ? `<img class="md-inline-img" src="${esc(src)}" alt="${esc(m[1])}" loading="lazy">` : (edit ? `<span class="md-chip"><span class="ms">image</span>${esc(m[1] || 'Bild')}</span>` : esc(m[1])));
       i += m[0].length; continue;
     }
     if (c === '[' && (m = at(RX.link))) {
@@ -162,6 +168,7 @@ export function inline(src, ctx = {}, mode = 'view') {
       }
       i += m[0].length; continue;
     }
+    if (c === '*' && (m = at(RX.boldital))) { out += `<strong><em>${inline(m[1], ctx, mode)}</em></strong>`; i += m[0].length; continue; }
     if (c === '*' && (m = at(RX.bold))) { out += `<strong>${inline(m[1], ctx, mode)}</strong>`; i += m[0].length; continue; }
     if (c === '*' && (m = at(RX.ital))) { out += `<em>${inline(m[1], ctx, mode)}</em>`; i += m[0].length; continue; }
     if (c === '~' && (m = at(RX.strike))) { out += `<del>${inline(m[1], ctx, mode)}</del>`; i += m[0].length; continue; }
@@ -187,7 +194,7 @@ export function plain(s) {
 
 // ---------- Parser ----------
 const isTask = l => /^\s*[-*+]\s+\[[ xX]\]\s/.test(l) || /^\s*[-*+]\s+\[[ xX]\]$/.test(l);
-const isUl = l => /^\s*[-*+]\s+/.test(l);
+const isUl = l => /^\s*[-*+](\s+|$)/.test(l);
 const isOl = l => /^\s*\d+[.)]\s+/.test(l);
 const isHr = l => /^\s*(---+|\*\*\*+|___+)\s*$/.test(l);
 const isStart = l => /^(#{1,6}\s|```|~~~|>|\||:::|::[a-z]|\[\^[\w-]+\]:\s?)/.test(l.trim()) || isUl(l) || isOl(l) || isHr(l) || /^!\[[^\]]*\]\([^)]+\)\s*$/.test(l.trim());
@@ -197,19 +204,29 @@ function parseJson(s) {
   try { const v = JSON.parse(s); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; }
 }
 
-export function parse(src, lineOffset = 0) {
+export const LISTY = ['bullet', 'number', 'todo'];
+const indentOf = l => { let w = 0; for (const ch of l) { if (ch === ' ') w++; else if (ch === '\t') w += 4; else break; } return w; };
+// Öffnender Zaun (``` oder ~~~, mit beliebigem Zusatz wie „js title=x“) und passendes Ende
+const fenceOpen = l => { const m = l.match(/^\s*(`{3,}|~{3,})\s*(.*?)\s*$/); return m && !(m[1][0] === '`' && m[2].includes('`')) ? m : null; };
+const fenceClose = (l, fence) => { const t = l.trim(); return t.length >= fence.length && t === fence[0].repeat(t.length); };
+
+// keepCols: nur intern – „:::column“ als eigenen Block liefern (für :::columns)
+export function parse(src, lineOffset = 0, keepCols = false) {
   const L = String(src || '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   let i = 0, m;
+  let stack = []; // Einrückungen der offenen Listenebenen
   while (i < L.length) {
     const l = L[i];
     const ln = i + lineOffset;
     if (!l.trim()) { i++; continue; }
+    const listLine = isTask(l) || isUl(l) || isOl(l);
+    if (!listLine || isHr(l)) stack = [];
     // Code und Spezialblöcke in Zäunen
-    if ((m = l.match(/^\s*(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/))) {
-      const fence = m[1], lang = m[2].toLowerCase(), buf = [];
+    if ((m = fenceOpen(l))) {
+      const fence = m[1], info = m[2].slice(0, 80), lang = info.toLowerCase(), buf = [];
       i++;
-      while (i < L.length && !(L[i].trim().startsWith(fence[0].repeat(fence.length)) && /^\s*(`{3,}|~{3,})\s*$/.test(L[i]) && L[i].trim().length >= fence.length)) { buf.push(L[i]); i++; }
+      while (i < L.length && !fenceClose(L[i], fence)) { buf.push(L[i]); i++; }
       i++;
       const text = buf.join('\n');
       if (lang === 'math' || lang === 'mermaid') { out.push({ id: bid(), type: lang, text }); continue; }
@@ -217,27 +234,39 @@ export function parse(src, lineOffset = 0) {
         const data = parseJson(text);
         if (data) { out.push({ id: bid(), type: lang, data }); continue; }
       }
-      out.push({ id: bid(), type: 'code', lang: m[2], text });
+      out.push({ id: bid(), type: 'code', lang: info, text });
       continue;
     }
     // Container (:::toggle, :::columns)
     if ((m = l.match(/^\s*(:{3,})(toggle|columns|column)\b\s*(.*)$/))) {
       const name = m[2], arg = m[3].trim(), inner = [];
       const start = i + 1;
-      let depth = 1;
+      let depth = 1, fence = null, fm;
       i++;
       while (i < L.length) {
-        if (/^\s*:{3,}[a-z]/.test(L[i])) depth++;
+        // „:::“ innerhalb von Code-Blöcken zählt nicht
+        if (fence) { if (fenceClose(L[i], fence)) fence = null; }
+        else if ((fm = fenceOpen(L[i]))) fence = fm[1];
+        else if (/^\s*:{3,}[a-z]/.test(L[i])) depth++;
         else if (/^\s*:{3,}\s*$/.test(L[i])) { depth--; if (depth === 0) break; }
         inner.push(L[i]); i++;
       }
       i++;
       if (name === 'toggle') out.push({ id: bid(), type: 'toggle', text: arg, children: parse(inner.join('\n'), lineOffset + start) });
       else if (name === 'columns') {
-        const cols = parse(inner.join('\n'), lineOffset + start).filter(b => b.type === 'column').map(b => b.children);
-        if (cols.length >= 2) out.push({ id: bid(), type: 'columns', cols: cols.slice(0, 5) });
-        else cols.forEach(c => out.push(...c));
-      } else out.push({ id: bid(), type: 'column', children: parse(inner.join('\n'), lineOffset + start) });
+        const kids = parse(inner.join('\n'), lineOffset + start, true);
+        // Inhalt außerhalb von „:::column“ nicht verwerfen, sondern davor einfügen
+        out.push(...kids.filter(b => b.type !== 'column'));
+        const cols = kids.filter(b => b.type === 'column').map(b => b.children);
+        if (cols.length >= 2) {
+          const keep = cols.slice(0, 5);
+          cols.slice(5).forEach(c => keep[4].push(...c));
+          out.push({ id: bid(), type: 'columns', cols: keep });
+        } else cols.forEach(c => out.push(...c));
+      } else {
+        const children = parse(inner.join('\n'), lineOffset + start);
+        if (keepCols) out.push({ id: bid(), type: 'column', children }); else out.push(...children);
+      }
       continue;
     }
     // Einzeldirektiven
@@ -253,7 +282,7 @@ export function parse(src, lineOffset = 0) {
     }
     if ((m = l.match(/^\s*(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/))) { out.push({ id: bid(), type: 'h', level: Math.min(4, m[1].length), text: m[2] }); i++; continue; }
     if (isHr(l)) { out.push({ id: bid(), type: 'hr' }); i++; continue; }
-    if ((m = l.trim().match(/^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)$/))) {
+    if ((m = l.trim().match(/^!\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"([^"]*)")?\)$/))) {
       out.push({ id: bid(), type: 'image', alt: m[1], src: m[2], caption: m[3] || '' }); i++; continue;
     }
     if ((m = l.match(/^\s*\[\^([\w-]{1,30})\]:\s?(.*)$/))) { out.push({ id: bid(), type: 'footnote', ref: m[1], text: m[2] }); i++; continue; }
@@ -261,9 +290,14 @@ export function parse(src, lineOffset = 0) {
       const rows = [];
       while (i < L.length && L[i].trim().startsWith('|')) { rows.push(L[i].trim()); i++; }
       const cells = r => r.replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
-      const body = rows.filter((r, k) => !(k === 1 && /^\|[\s:|-]+\|?$/.test(r))).map(cells);
+      const sep = rows.length > 1 && /^\|[\s:|-]+\|?$/.test(rows[1]) ? cells(rows[1]) : null;
+      const body = rows.filter((r, k) => !(k === 1 && sep)).map(cells);
       const w = Math.max(...body.map(r => r.length));
-      out.push({ id: bid(), type: 'table', rows: body.map(r => r.concat(Array(w - r.length).fill(''))) });
+      const t = { id: bid(), type: 'table', rows: body.map(r => r.concat(Array(w - r.length).fill(''))) };
+      // Spaltenausrichtung aus der Trennzeile (:--, :-:, --:)
+      const align = (sep || []).map(c => (/^:.*:$/.test(c) ? 'center' : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : ''));
+      if (align.some(Boolean)) t.align = align.concat(Array(w).fill('')).slice(0, w);
+      out.push(t);
       continue;
     }
     if (l.trim().startsWith('>')) {
@@ -271,19 +305,33 @@ export function parse(src, lineOffset = 0) {
       while (i < L.length && L[i].trim().startsWith('>')) { buf.push(L[i].trim().replace(/^>\s?/, '')); i++; }
       const cm = buf[0].match(/^\[!(note|tip|important|warning|caution)\]\s*(.*)$/i);
       if (cm) {
-        const rest = [cm[2], ...buf.slice(1)].filter((x, k) => k > 0 || x);
-        out.push({ id: bid(), type: 'callout', kind: cm[1].toLowerCase(), text: joinLines(rest) });
-      } else out.push({ id: bid(), type: 'quote', text: joinLines(buf) });
+        // „> [!NOTE] Titel“ mit Folgezeilen: eigener Titel. Ohne Folgezeilen ist der Text der Inhalt.
+        const b = { id: bid(), type: 'callout', kind: cm[1].toLowerCase(), text: buf.length > 1 ? quoteText(buf.slice(1)) : cm[2].trim() };
+        if (buf.length > 1 && cm[2].trim()) b.title = cm[2].trim();
+        out.push(b);
+      } else out.push({ id: bid(), type: 'quote', text: quoteText(buf) });
       continue;
     }
-    if (isTask(l)) {
-      const mm = l.match(/^\s*[-*+]\s+\[([ xX])\]\s?(.*)$/);
-      out.push({ id: bid(), type: 'todo', done: mm[1] !== ' ', text: mm[2], line: ln }); i++; continue;
-    }
-    if (isUl(l)) { out.push({ id: bid(), type: 'bullet', text: l.replace(/^\s*[-*+]\s+/, '') }); i++; continue; }
-    if (isOl(l)) {
-      const n = Number(l.match(/^\s*(\d+)/)[1]);
-      out.push({ id: bid(), type: 'number', text: l.replace(/^\s*\d+[.)]\s+/, ''), start: n }); i++; continue;
+    if (listLine) {
+      // Verschachtelung über die Einrückung: tiefer eingerückt als der Vorgänger = eine Ebene tiefer
+      const w = indentOf(l);
+      while (stack.length && stack[stack.length - 1] >= w) stack.pop();
+      const indent = Math.min(stack.length, 8);
+      stack.push(w);
+      let b;
+      if (isTask(l)) {
+        const mm = l.match(/^\s*[-*+]\s+\[([ xX])\]\s?(.*)$/);
+        b = { id: bid(), type: 'todo', done: mm[1] !== ' ', text: mm[2], line: ln };
+      } else if (isUl(l)) b = { id: bid(), type: 'bullet', text: l.replace(/^\s*[-*+](\s+|$)/, '') };
+      else b = { id: bid(), type: 'number', text: l.replace(/^\s*\d+[.)]\s+/, ''), start: Number(l.match(/^\s*(\d+)/)[1]) };
+      i++;
+      // Eingerückte Folgezeilen gehören zum Listenpunkt
+      const cont = [b.text];
+      while (i < L.length && L[i].trim() && indentOf(L[i]) > w && !isStart(L[i])) { cont.push(L[i].trim()); i++; }
+      b.text = joinLines(cont);
+      if (indent) b.indent = indent;
+      out.push(b);
+      continue;
     }
     const buf = [l];
     i++;
@@ -292,25 +340,60 @@ export function parse(src, lineOffset = 0) {
   }
   return out;
 }
-// Zeilen eines Absatzes: Backslash am Zeilenende = harter Umbruch, sonst Leerzeichen
-function joinLines(lines) {
+// Zeilen eines Absatzes: (ungerade Anzahl) Backslash am Zeilenende = harter Umbruch, sonst Leerzeichen.
+// keepStarts: Zeilen, die wie ein Blockanfang aussehen (z. B. Listen im Zitat), behalten ihren Umbruch.
+const oddBackslash = s => ((/\\+$/.exec(s) || [''])[0].length % 2) === 1;
+function joinLines(lines, keepStarts = false) {
   let s = '';
   lines.forEach((x, k) => {
     if (k === 0) { s = x; return; }
-    if (/(^|[^\\])\\$/.test(s)) s = s.slice(0, -1) + '\n' + x;
+    if (oddBackslash(s)) s = s.slice(0, -1) + '\n' + x;
+    else if (keepStarts && isStart(x)) s += '\n' + x;
     else s += ' ' + x;
   });
-  return s.replace(/(^|[^\\])\\$/, '$1');
+  return s;
+}
+// Inhalt eines Zitats/Hinweisblocks: Leerzeilen („>“) trennen Absätze
+function quoteText(lines) {
+  const paras = [];
+  let cur = [];
+  for (const x of lines) {
+    if (x.trim()) cur.push(x.trim());
+    else if (cur.length) { paras.push(cur); cur = []; }
+  }
+  if (cur.length) paras.push(cur);
+  return paras.map(p => joinLines(p, true)).join('\n\n');
+}
+
+// Laufende Nummern nummerierter Listen (je Einrückungsebene), parallel zur Blockliste
+export function listNumbers(blocks) {
+  const out = [], cnt = [];
+  for (const b of blocks || []) {
+    if (!LISTY.includes(b.type)) { cnt.length = 0; out.push(0); continue; }
+    const lv = b.indent || 0, prev = cnt[lv];
+    cnt.length = lv + 1;
+    cnt[lv] = b.type === 'number' ? (typeof prev === 'number' ? prev + 1 : (Number.isInteger(b.start) && b.start >= 0 ? b.start : 1)) : null;
+    out.push(cnt[lv] ?? 0);
+  }
+  return out;
 }
 
 // ---------- Serializer ----------
 // Zeilenanfänge, die sonst als Block gelesen würden, werden escaped.
 function guardLine(x) {
-  if (/^(#{1,6}\s|>|\||:::?|```|~~~|[-*+]\s|\d+[.)]\s|!\[|\[\^[\w-]+\]:)/.test(x) || isHr(x)) return x.replace(/^(\d+)([.)])/, '$1\\$2').replace(/^([#>|:`~*+!\-[])/, '\\$1');
+  if (/^(#{1,6}\s|>|\||:::?|```|~~~|[-*+](\s|$)|\d+[.)]\s|!\[|\[\^[\w-]+\]:)/.test(x) || isHr(x)) return x.replace(/^(\d+)([.)])/, '$1\\$2').replace(/^([#>|:`~*+!\-[])/, '\\$1');
   return x;
 }
 const textLines = t => String(t || '').split('\n').map(x => x.replace(/\s+$/, ''));
-const hardBreaks = (t, guard = true) => textLines(t).map((x, k) => (guard ? guardLine(x) : x)).join('\\\n');
+const hardBreaks = (t, guard = true) => textLines(t).map(x => (guard ? guardLine(x.replace(/^\s+/, '')) : x)).join('\\\n');
+// Zitat/Hinweis: harte Umbrüche bleiben erhalten, Leerzeilen trennen Absätze
+const quoteLines = t => String(t || '').split(/\n{2,}/).map(p => '> ' + textLines(p).join('\\\n> ')).join('\n>\n');
+// Listenpunkt: Einrückung je Ebene, Folgezeilen eingerückt unter dem Punkt
+const listItem = (b, marker) => {
+  const pad = '    '.repeat(b.indent || 0), lines = textLines(b.text);
+  return pad + marker + lines[0] + lines.slice(1).map(x => '\\\n' + pad + '  ' + guardLine(x.replace(/^\s+/, ''))).join('');
+};
+const ALIGN = { left: ':--', center: ':-:', right: '--:' };
 const directive = (name, obj) => `::${name}${obj && Object.keys(obj).length ? ' ' + JSON.stringify(obj) : ''}`;
 const pick = (b, keys) => Object.fromEntries(keys.filter(k => b[k] !== undefined && b[k] !== '' && b[k] !== null).map(k => [k, b[k]]));
 
@@ -321,19 +404,27 @@ function fenceFor(text) {
 
 export function serialize(blocks) {
   const parts = [];
-  let prev = null, num = 0;
-  for (const b of blocks || []) {
+  let prev = null;
+  const nums = listNumbers(blocks);
+  (blocks || []).forEach((b, k) => {
     let s;
-    const listy = ['bullet', 'number', 'todo'].includes(b.type);
-    if (b.type === 'number') num = prev && prev.type === 'number' ? num + 1 : (b.start && b.start > 0 ? b.start : 1);
+    // Leere Absätze sind nur Abstand im Editor und werden nicht gespeichert
+    if (b.type === 'p' && !String(b.text || '').trim()) return;
+    const listy = LISTY.includes(b.type);
     switch (b.type) {
       case 'p': s = hardBreaks(b.text); break;
-      case 'h': s = '#'.repeat(b.level || 2) + ' ' + String(b.text || '').replace(/\n/g, ' '); break;
-      case 'quote': s = textLines(b.text).map(x => '> ' + x).join('\n'); break;
-      case 'callout': s = [`> [!${(b.kind || 'note').toUpperCase()}]`, ...textLines(b.text).map(x => '> ' + x)].join('\n'); break;
-      case 'bullet': s = '- ' + String(b.text || '').replace(/\n/g, ' '); break;
-      case 'number': s = `${num}. ` + String(b.text || '').replace(/\n/g, ' '); break;
-      case 'todo': s = `- [${b.done ? 'x' : ' '}] ` + String(b.text || '').replace(/\n/g, ' '); break;
+      // „#“ am Ende würde sonst als schließende Markierung gelesen
+      case 'h': s = '#'.repeat(b.level || 2) + ' ' + String(b.text || '').replace(/\n/g, ' ').replace(/(\s)(#+)$/, '$1\\$2'); break;
+      case 'quote': s = quoteLines(b.text); break;
+      case 'callout': {
+        const title = String(b.title || '').replace(/\n/g, ' ').trim();
+        const body = String(b.text || '').trim();
+        s = `> [!${(b.kind || 'note').toUpperCase()}]${title ? ' ' + title : ''}` + (body ? '\n' + quoteLines(b.text) : (title ? '\n>' : ''));
+        break;
+      }
+      case 'bullet': s = listItem(b, '- '); break;
+      case 'number': s = listItem(b, `${nums[k]}. `); break;
+      case 'todo': s = listItem(b, `- [${b.done ? 'x' : ' '}] `); break;
       case 'code': { const f = fenceFor(b.text); s = `${f}${b.lang || ''}\n${b.text || ''}\n${f}`; break; }
       case 'math': case 'mermaid': { const f = fenceFor(b.text); s = `${f}${b.type}\n${b.text || ''}\n${f}`; break; }
       case 'kanban': case 'base': s = '```' + b.type + '\n' + JSON.stringify(b.data || {}) + '\n```'; break;
@@ -343,12 +434,12 @@ export function serialize(blocks) {
       case 'table': {
         const rows = (b.rows && b.rows.length ? b.rows : [['']]).map(r => '| ' + r.map(c => String(c || '').replace(/\n/g, ' ').replace(/\|/g, '\\|')).join(' | ') + ' |');
         const w = (b.rows && b.rows[0] ? b.rows[0].length : 1);
-        rows.splice(1, 0, '|' + Array(w).fill('---').join('|') + '|');
+        rows.splice(1, 0, '|' + Array.from({ length: w }, (_, c) => ALIGN[(b.align || [])[c]] || '---').join('|') + '|');
         s = rows.join('\n');
         break;
       }
       case 'image':
-        s = b.src ? `![${String(b.alt || '').replace(/[[\]\n]/g, '')}](${b.src}${b.caption ? ` "${String(b.caption).replace(/["\n]/g, '')}"` : ''})` : directive('image', {});
+        s = b.src ? `![${String(b.alt || '').replace(/[[\]\n]/g, '')}](${encUrl(b.src)}${b.caption ? ` "${String(b.caption).replace(/"/g, '\'').replace(/\n/g, ' ')}"` : ''})` : directive('image', {});
         break;
       case 'video': case 'audio': case 'pdf': case 'file': s = directive(b.type, pick(b, ['src', 'name', 'size'])); break;
       case 'embed': s = directive('embed', pick(b, ['url', 'height'])); break;
@@ -360,18 +451,19 @@ export function serialize(blocks) {
       case 'columns': s = ':::columns\n' + (b.cols || []).map(c => `:::column\n${serialize(c)}\n:::`).join('\n') + '\n:::'; break;
       default: s = hardBreaks(b.text || '');
     }
-    // Listenpunkte gleicher Art ohne Leerzeile zusammenhalten
-    const join = prev && listy && prev.type === b.type ? '\n' : (prev ? '\n\n' : '');
-    parts.push(join + s);
+    // Listenpunkte gleicher Art (und alle verschachtelten) ohne Leerzeile zusammenhalten
+    const tight = prev && listy && LISTY.includes(prev.type) && (prev.type === b.type || b.indent || prev.indent);
+    parts.push((tight ? '\n' : (prev ? '\n\n' : '')) + s);
     prev = b;
-  }
+  });
   return parts.join('');
 }
 
 // ---------- Renderer ----------
-function renderTable(rows, ctx) {
+function renderTable(rows, ctx, align) {
   const [head, ...body] = rows.length ? rows : [['']];
-  return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${head.map(h => `<th>${inline(h, ctx)}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${r.map(c => `<td>${inline(c, ctx)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const al = c => (['left', 'center', 'right'].includes((align || [])[c]) ? ` class="al-${align[c]}"` : '');
+  return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${head.map((h, c) => `<th${al(c)}>${inline(h, ctx)}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${r.map((v, c) => `<td${al(c)}>${inline(v, ctx)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
 export function fmtSize(n) {
@@ -443,14 +535,14 @@ function renderBlock(b, ctx, st) {
     case 'quote': return `<blockquote class="md-quote">${inline(b.text, ctx)}</blockquote>`;
     case 'callout': {
       const c = CALLOUTS[b.kind] || CALLOUTS.note;
-      return `<div class="md-callout k-${esc(b.kind in CALLOUTS ? b.kind : 'note')}"><span class="ms">${c.icon}</span><div><div class="md-callout-t">${c.label}</div>${inline(b.text, ctx)}</div></div>`;
+      return `<div class="md-callout k-${esc(b.kind in CALLOUTS ? b.kind : 'note')}"><span class="ms">${c.icon}</span><div><div class="md-callout-t">${b.title ? inline(b.title, ctx) : c.label}</div>${inline(b.text, ctx)}</div></div>`;
     }
     case 'code': return `<div class="md-pre-wrap">${b.lang ? `<span class="md-lang">${esc(b.lang)}</span>` : ''}<button type="button" class="md-copy ms" title="Kopieren" data-copy>content_copy</button><pre class="md-pre">${esc(b.text)}</pre></div>`;
     case 'math': return `<div class="md-math-block" data-tex="${esc(b.text)}"><pre class="md-pre">${esc(b.text)}</pre></div>`;
     case 'mermaid': return `<div class="md-mermaid" data-src="${esc(b.text)}"><pre class="md-pre">${esc(b.text)}</pre></div>`;
     case 'hr': return '<hr class="md-hr">';
     case 'pagebreak': return '<div class="md-pagebreak" role="separator"><span>Seitenumbruch</span></div>';
-    case 'table': return renderTable(b.rows || [], ctx);
+    case 'table': return renderTable(b.rows || [], ctx, b.align);
     case 'image': {
       if (!b.src) return '';
       const src = mediaSrc(b.src, ctx);
@@ -518,22 +610,43 @@ function renderBlock(b, ctx, st) {
   }
 }
 
+// Zusammenhängende Listenpunkte (auch verschachtelt und gemischt) als <ul>/<ol>
+function renderLists(items, ctx) {
+  const nums = listNumbers(items);
+  const lv = it => it.indent || 0;
+  const ia = ctx.interactive && !ctx.inSynced;
+  let k = 0;
+  const body = it => (it.type === 'todo'
+    ? `<div class="md-task"><span class="ms md-check${it.done ? ' fill' : ''}${ia ? ' clickable' : ''}"${ia && it.line !== undefined ? ` data-task-line="${it.line}" role="checkbox" aria-checked="${it.done}" tabindex="0"` : ''}>${it.done ? 'check_box' : 'check_box_outline_blank'}</span><span>${inline(it.text, ctx)}</span></div>`
+    : inline(it.text, ctx));
+  const list = level => {
+    let h = '';
+    while (k < items.length && lv(items[k]) >= level) {
+      const type = lv(items[k]) > level ? 'bullet' : items[k].type;
+      const tag = type === 'number' ? 'ol' : 'ul';
+      const start = type === 'number' && nums[k] !== 1 ? ` start="${Number(nums[k])}"` : '';
+      h += `<${tag} class="${type === 'todo' ? 'md-tasks' : 'md-list'}"${start}>`;
+      while (k < items.length && (lv(items[k]) > level || (lv(items[k]) === level && items[k].type === type))) {
+        if (lv(items[k]) > level) { h += `<li class="md-li-nest">${list(level + 1)}</li>`; continue; }
+        const it = items[k++];
+        h += `<li${it.type === 'todo' && it.done ? ' class="done"' : ''}>${body(it)}${k < items.length && lv(items[k]) > level ? list(level + 1) : ''}</li>`;
+      }
+      h += `</${tag}>`;
+    }
+    return h;
+  };
+  return list(0);
+}
+
 function renderBlocks(blocks, ctx, st) {
   const out = [];
   for (let k = 0; k < blocks.length; k++) {
     const b = blocks[k];
-    if (['bullet', 'number', 'todo'].includes(b.type)) {
-      const items = [];
-      while (k < blocks.length && blocks[k].type === b.type) items.push(blocks[k++]);
+    if (LISTY.includes(b.type)) {
+      const from = k;
+      while (k < blocks.length && LISTY.includes(blocks[k].type)) k++;
+      out.push(renderLists(blocks.slice(from, k), ctx));
       k--;
-      if (b.type === 'todo') {
-        const ia = ctx.interactive && !ctx.inSynced;
-        out.push(`<ul class="md-tasks">${items.map(it => `<li class="${it.done ? 'done' : ''}"><span class="ms md-check${it.done ? ' fill' : ''}${ia ? ' clickable' : ''}"${ia && it.line !== undefined ? ` data-task-line="${it.line}" role="checkbox" aria-checked="${it.done}" tabindex="0"` : ''}>${it.done ? 'check_box' : 'check_box_outline_blank'}</span><span>${inline(it.text, ctx)}</span></li>`).join('')}</ul>`);
-      } else {
-        const tag = b.type === 'number' ? 'ol' : 'ul';
-        const start = b.type === 'number' && b.start > 1 ? ` start="${Number(b.start)}"` : '';
-        out.push(`<${tag} class="md-list"${start}>${items.map(it => `<li>${inline(it.text, ctx)}</li>`).join('')}</${tag}>`);
-      }
       continue;
     }
     out.push(renderBlock(b, ctx, st));

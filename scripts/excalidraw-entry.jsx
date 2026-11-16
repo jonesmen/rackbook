@@ -28,6 +28,7 @@ function App() {
         setInitial({ elements: data.elements || [], appState: { ...(data.appState || {}), collaborators: new Map() }, files: data.files || {}, scrollToContent: true });
         loaded.current = true;
       } else if (m.type === 'saved') { setBusy(false); setDirty(false); sigRef.current = null; }
+      else if (m.type === 'error') setBusy(false);
     };
     window.addEventListener('message', onMsg);
     send({ type: 'ready' });
@@ -45,7 +46,6 @@ function App() {
       exportPadding: 16,
     });
     send({ type: 'save', svg: new XMLSerializer().serializeToString(svg), exit });
-    if (exit) setBusy(false);
   };
 
   if (!initial) return <div className="rb-loading">Excalidraw wird geladen …</div>;

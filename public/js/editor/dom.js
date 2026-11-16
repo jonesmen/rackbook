@@ -1,10 +1,11 @@
 // Hilfsfunktionen für contenteditable-Blöcke: DOM ⇄ Markdown, Cursor-Positionen.
-import { inline } from '../md.js';
+import { inline, encUrl } from '../md.js';
 
 // Text → Markdown escapen (nur was sonst als Formatierung gelesen würde)
 export function escText(t) {
   let s = String(t).replace(/ /g, ' ');
-  s = s.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\');
+  // Backslash vor Satzzeichen und am Ende (sonst würde er als Zeilenumbruch gelesen) verdoppeln
+  s = s.replace(/\\(?=[!-/:-@[-`{-~]|$)/g, '\\\\');
   s = s.replace(/([*`])/g, '\\$1');
   s = s.replace(/~~/g, '\\~\\~');
   s = s.replace(/\{\{/g, '\\{{');
@@ -43,7 +44,7 @@ export function nodeToMd(node) {
     case 'A': {
       const href = el.getAttribute('href') || '';
       const text = inner();
-      return href && text ? `[${text}](${href.replace(/[()\s]/g, c => encodeURIComponent(c))})` : text;
+      return href && text ? `[${text.replace(/(?<!\\)\]/g, '\\]')}](${encUrl(href)})` : text;
     }
     case 'DIV': case 'P': { const t = inner(); return t ? '\n' + t : ''; }
     default: return inner();

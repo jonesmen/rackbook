@@ -166,6 +166,8 @@ class App extends Component {
   sessionLost() {
     if (this.state.boot !== 'ready') return;
     setCsrf(null);
+    // Im Editor: Seite nicht verwerfen, sondern über dem Editor erneut anmelden lassen
+    if (this.state.page === 'edit' && this.docEditor && this.state.user) { if (!this.state.relogin) this.setState({ relogin: true }); return; }
     this.setState({ boot: 'auth', user: null, docs: [], authState: { ...(this.state.authState || {}), setupRequired: false } });
   }
   async logout() {
@@ -555,6 +557,15 @@ class App extends Component {
     const staleDocs = s.docs.filter(d => now - touched(d) > staleMs).sort((a, b) => touched(a) - touched(b));
 
     return html`
+      ${s.relogin && html`<div class="relogin" role="dialog" aria-modal="true" aria-label="Erneut anmelden">
+        <div class="relogin-note"><span class="ms">lock_clock</span>Die Sitzung ist abgelaufen. Nach der Anmeldung wird die Seite gespeichert – deine Änderungen bleiben erhalten.</div>
+        <${AuthScreen} state=${{ ...(s.authState || {}), setupRequired: false }} onAuthed=${(user, csrf) => {
+          setCsrf(csrf);
+          // Anderes Konto angemeldet: neu laden statt fremde Änderungen zu speichern (der lokale Entwurf bleibt)
+          if (!s.user || user.id !== s.user.id) { location.reload(); return; }
+          this.setState({ relogin: false, user }, () => { if (this.docEditor) this.docEditor.save(); this.refresh(); });
+        }} />
+      </div>`}
       <div class="shell" onClick=${() => { if (s.menuId || s.filterOpen || s.userMenu) this.setState({ menuId: null, filterOpen: false, userMenu: false }); }}>
         ${this.renderSidebar(expanded, staleDocs)}
         <main class="main" ref=${this.mainRef}>
