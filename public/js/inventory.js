@@ -2,7 +2,7 @@
 import { html, Component } from '/vendor/preact-htm.js';
 import { api } from './api.js';
 import { ASSET_KINDS, ASSET_ICONS, ASSET_STATUS } from './md.js';
-import { fmtDate } from './util.js';
+import { fmtDate, fmtDateIn, copyText } from './util.js';
 import { applyPlaceholders } from './templates-views.js';
 
 const FIELD_LABELS = {
@@ -32,9 +32,10 @@ function descendants(list, id) {
 
 export class InventoryPage extends Component {
   state = { q: '', kind: '', overview: null, form: null, formFor: null, busy: false };
-  componentDidMount() { this.loadOverview(); }
+  componentDidMount() { this.loadOverview(); this.props.app.invDirty = () => !!this.state.formDirty && !!this.props.app.state.assetId; }
+  componentWillUnmount() { this.props.app.invDirty = null; }
   async loadOverview() {
-    try { this.setState({ overview: await api('/assets/ip-overview') }); } catch { /* still */ }
+    try { this.setState({ overview: await api('/assets/ip-overview'), overviewErr: null }); } catch (e) { this.setState({ overviewErr: e.message || 'Laden fehlgeschlagen' }); }
   }
   async reload() {
     await this.props.app.loadAssets();
@@ -112,8 +113,10 @@ export class InventoryPage extends Component {
   renderIps() {
     const { app } = this.props;
     const o = this.state.overview;
-    if (!o) return html`<div class="md-empty">Wird geladen …</div>`;
-    const copy = ip => { if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(ip).then(() => app.flash(`${ip} kopiert`)); };
+    if (!o) return this.state.overviewErr
+      ? html`<div class="md-empty">Die IP-Belegung konnte nicht geladen werden (${this.state.overviewErr}). <button type="button" class="link-acc" onClick=${() => this.loadOverview()}>Erneut versuchen</button></div>`
+      : html`<div class="md-empty">Wird geladen …</div>`;
+    const copy = ip => copyText(ip).then(ok => app.flash(ok ? `${ip} kopiert` : 'Kopieren nicht möglich', null, !ok));
     return html`
       ${o.networks.length === 0 && html`<div class="card empty-big"><div class="t">Noch keine Netzwerke erfasst</div><div class="s">Lege ein Netzwerk mit Adressbereich (z. B. 10.0.20.0/24) an – dann siehst du hier Belegung, freie Adressen und Doppelvergaben.</div>
         ${app.canEdit() && html`<div class="btn-row center"><button type="button" class="btn btn-primary md" onClick=${() => app.go('inventory', { assetId: 'new', newKind: 'network', newAssetParent: null })}><span class="ms">lan</span>Netzwerk anlegen</button></div>`}</div>`}
@@ -150,11 +153,14 @@ export class InventoryPage extends Component {
     const { app } = this.props;
     if (!a && !isNew) return html`<div class="page g18"><div class="card empty-big"><div class="t">Eintrag nicht gefunden</div><div class="btn-row center"><button type="button" class="btn btn-ghost md" onClick=${() => app.go('inventory', { assetId: null })}>Zum Inventar</button></div></div></div>`;
     const key = isNew ? 'new:' + (app.state.newKind || '') + (app.state.newAssetParent || '') : a.id + ':' + a.updated;
-    if (this.state.formFor !== key) { this.state.formFor = key; this.state.form = this.formFrom(a); }
+    // Formular nur neu füllen, wenn ein anderer Eintrag geöffnet wird – nicht, wenn im Hintergrund neue Daten
+    // eintreffen, während hier gerade Eingaben stehen.
+    const ident = isNew ? key : a.id;
+    if (this.state.formFor !== key && !(this.state.formDirty && this.state.formIdent === ident)) { this.state.formFor = key; this.state.formIdent = ident; this.state.form = this.formFrom(a); this.state.formDirty = false; }
     const f = this.state.form;
     const canEdit = app.canEdit();
     const all = app.state.assets;
-    const set = patch => this.setState({ form: { ...f, ...patch } });
+    const set = patch => this.setState({ form: { ...f, ...patch }, formDirty: true });
     const setData = (k, v) => set({ data: { ...f.data, [k]: v } });
     const blocked = a ? descendants(all, a.id) : new Set();
     const parents = all.filter(x => (!a || (x.id !== a.id && !blocked.has(x.id))) && x.kind !== 'network').sort((x, y) => x.name.localeCompare(y.name, 'de'));
@@ -170,6 +176,7 @@ export class InventoryPage extends Component {
       const body = { kind: f.kind, name: f.name, status: f.status, parent: f.parent || null, tags: f.tags, doc: f.doc || null, data: Object.fromEntries(Object.entries(f.data).map(([k, v]) => [k, v ?? ''])), ips: f.ips.filter(i => i.address.trim()) };
       try {
         const r = isNew ? await api('/assets', { method: 'POST', body }) : await api('/assets/' + encodeURIComponent(a.id), { method: 'PUT', body });
+        this.state.formDirty = false; this.state.formFor = null;
         await this.reload();
         app.flash(isNew ? 'Eintrag angelegt' : 'Gespeichert');
         if (isNew) app.go('inventory', { assetId: r.asset.id }, true);
@@ -191,7 +198,7 @@ export class InventoryPage extends Component {
         app.openEditor(r.doc);
       } catch (e) { app.fail(e); }
     };
-    const copySnippet = () => { const t = `::asset {"id":"${a.id}"}`; if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(() => app.flash('Kopiert – im Dokument als eigene Zeile einfügen')); };
+    const copySnippet = () => copyText(`::asset {"id":"${a.id}"}`).then(ok => app.flash(ok ? 'Kopiert – im Dokument als eigene Zeile einfügen' : 'Kopieren nicht möglich', null, !ok));
     const input = (k, ph, multiline) => (multiline
       ? html`<textarea class="input" rows="4" value=${f.data[k] || ''} placeholder=${ph || ''} disabled=${!canEdit} onInput=${e => setData(k, e.target.value)}></textarea>`
       : html`<input class=${'input' + (['cidr', 'gateway', 'dhcp', 'dns', 'ports', 'serial'].includes(k) ? ' mono' : '')} value=${f.data[k] || ''} placeholder=${ph || ''} disabled=${!canEdit} onInput=${e => setData(k, e.target.value)} />`);
@@ -209,7 +216,7 @@ export class InventoryPage extends Component {
           <span class="inv-big-ic"><span class="ms">${kindIcon(f.kind)}</span></span>
           <div class="grow">
             <input class="title-edit inv-title" value=${f.name} placeholder="Name, z. B. Hostname" disabled=${!canEdit} onInput=${e => set({ name: e.target.value })} />
-            <div class="doc-meta">${statusPill(f.status)}<span class="small muted">${ASSET_KINDS[f.kind]}${a ? ` · geändert ${fmtDate(a.updated)}${a.updatedBy ? ` von ${a.updatedBy}` : ''}` : ''}</span></div>
+            <div class="doc-meta">${statusPill(f.status)}<span class="small muted">${ASSET_KINDS[f.kind]}${a ? ` · geändert ${fmtDateIn(a.updated)}${a.updatedBy ? ` von ${a.updatedBy}` : ''}` : ''}</span></div>
           </div>
           ${canEdit && html`<div class="btn-row">
             ${!isNew && html`<button type="button" class="btn btn-ghost" onClick=${remove}><span class="ms">delete</span>Löschen</button>`}

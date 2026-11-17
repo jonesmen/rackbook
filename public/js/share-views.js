@@ -1,6 +1,6 @@
 import { html, useState, useEffect } from '/vendor/preact-htm.js';
 import { api } from './api.js';
-import { Icon, Toggle, fmtDate, fmtDateTime, stop } from './util.js';
+import { Icon, Toggle, fmtDate, fmtDateTime, stop, fmtDateIn, Overlay } from './util.js';
 
 export const shareUrl = token => `${location.origin}/share#${token}`;
 
@@ -23,7 +23,7 @@ function ShareRow({ app, s, onRevoke, showOwner, showTitle }) {
           ${s.expired && html` <span class="pill bad">abgelaufen</span>`}
         </div>
         <div class="xs muted">${s.kind === 'folder' ? (s.includeChildren ? 'Ordner inkl. Unterordner' : 'Ordner') : (s.includeChildren ? 'Seite inkl. Unterseiten' : 'Nur diese Seite')}
-          · ${expiryLabel(s)} · ${s.viewCount}× aufgerufen${s.lastViewedAt ? `, zuletzt ${fmtDate(s.lastViewedAt)}` : ''}${showOwner ? ` · von ${s.displayName}` : ''} · erstellt ${fmtDate(s.createdAt)}</div>
+          · ${expiryLabel(s)} · ${s.viewCount}× aufgerufen${s.lastViewedAt ? `, zuletzt ${fmtDateIn(s.lastViewedAt)}` : ''}${showOwner ? ` · von ${s.displayName}` : ''} · erstellt ${fmtDate(s.createdAt)}</div>
       </div>
       ${!s.expired && html`<button type="button" class="btn btn-danger sm" onClick=${() => onRevoke(s)}>Widerrufen</button>`}
     </div>`;
@@ -57,8 +57,8 @@ export function ShareDialog({ app, item, onClose }) {
   };
   const childLabel = item.kind === 'folder' ? 'Unterordner einschließen' : 'Unterseiten einschließen';
   return html`
-    <div class="overlay" onClick=${onClose}>
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Teilen" onClick=${stop}>
+    <${Overlay} onClose=${onClose}>
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Teilen">
         <div class="modal-head"><h2 class="h2">Teilen: ${item.title}</h2><button type="button" class="ms close-btn" aria-label="Schließen" onClick=${onClose}>close</button></div>
         ${!cfg.enabled ? html`<div class="notice"><${Icon} name="info" />Das Teilen per Link ist vom Administrator deaktiviert.</div>` : !info ? html`<div class="small muted">Wird geladen …</div>` : html`
           <div style=${{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -98,7 +98,7 @@ export function ShareDialog({ app, item, onClose }) {
               </form>` : html`<div class="small muted">Du kannst nur selbst erstellte Inhalte teilen.</div>`}
           </div>`}
       </div>
-    </div>`;
+    </${Overlay}>`;
 }
 
 // ---------- Einstellungen → Geteilte Links ----------

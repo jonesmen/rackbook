@@ -4,7 +4,7 @@ import { api, getCsrf, ApiError } from './api.js';
 import { renderMd, plain } from './md.js';
 import { hydrate, baseSortClick } from './hydrate.js';
 import { BlockEditor } from './editor/editor.js';
-import { fmtDate, wordsOf, fmtWords, initials } from './util.js';
+import { fmtDate, wordsOf, fmtWords, initials, fmtDateIn } from './util.js';
 import { applyPlaceholders } from './templates-views.js';
 import { lineDiff, diffHunks } from './diff.js';
 
@@ -199,7 +199,7 @@ export class DocEditor extends Component {
       <div class="doc-edit">
         ${s.conflict && html`
           <div class="banner warn"><span class="ms">warning</span>
-            <div class="grow">„${s.conflict.title}“ wurde inzwischen von ${s.conflict.updatedBy || 'jemand anderem'} geändert (${fmtDate(s.conflict.updated)}).</div>
+            <div class="grow">„${s.conflict.title}“ wurde inzwischen von ${s.conflict.updatedBy || 'jemand anderem'} geändert (${fmtDateIn(s.conflict.updated)}).</div>
             <button type="button" class="btn btn-ghost sm" onClick=${() => this.setState({ compare: !s.compare })}><span class="ms">difference</span>${s.compare ? 'Vergleich ausblenden' : 'Vergleichen'}</button>
             <button type="button" class="btn btn-ghost sm" onClick=${() => this.takeTheirs()}>Deren Version laden</button>
             <button type="button" class="btn btn-primary sm" onClick=${() => this.keepMine()}>Meine Version speichern</button>
@@ -207,7 +207,7 @@ export class DocEditor extends Component {
           ${s.compare && html`<${DiffView} from=${s.conflict.content} to=${s.content} fromLabel="Version auf dem Server" toLabel="Deine Version" />`}`}
         ${s.draft && !s.conflict && html`
           <div class="banner warn"><span class="ms">history</span>
-            <div class="grow">Für diese Seite gibt es einen nicht gespeicherten Entwurf vom ${fmtDate(s.draft.ts)} auf diesem Gerät.</div>
+            <div class="grow">Für diese Seite gibt es einen nicht gespeicherten Entwurf von ${fmtDateIn(s.draft.ts)} auf diesem Gerät.</div>
             <button type="button" class="btn btn-ghost sm" onClick=${() => this.setState({ compare: !s.compare })}><span class="ms">difference</span>${s.compare ? 'Vergleich ausblenden' : 'Vergleichen'}</button>
             <button type="button" class="btn btn-ghost sm" onClick=${() => this.dropDraft()}>Verwerfen</button>
             <button type="button" class="btn btn-primary sm" onClick=${() => this.restoreDraft()}>Entwurf wiederherstellen</button>
@@ -249,7 +249,8 @@ export class DocEditor extends Component {
         </div>
         <div class="article editor-article">
           ${s.raw
-            ? html`<textarea class="editor-ta raw" value=${s.content} spellcheck="false" aria-label="Inhalt (Markdown)" placeholder="Markdown …"
+            ? html`<textarea class="editor-ta raw" value=${s.content} spellcheck="false" aria-label="Inhalt (Markdown)" placeholder="Markdown …" wrap=${app.settings().wrap === false ? 'off' : 'soft'}
+                style=${{ fontSize: (app.settings().fontSize || 14) + 'px', whiteSpace: app.settings().wrap === false ? 'pre' : 'pre-wrap' }}
                 onInput=${e => this.set({ content: e.target.value })}
                 onKeyDown=${e => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); this.flushNow(); } }}></textarea>`
             : html`<${BlockEditor} ref=${this.edRef} key=${'k' + s.key} docKey=${s.key} value=${s.content} env=${this.env}

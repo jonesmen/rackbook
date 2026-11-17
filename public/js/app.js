@@ -6,8 +6,7 @@ import { CommandPalette } from './palette.js';
 import { TemplatePicker, applyPlaceholders } from './templates-views.js';
 import { InventoryPage } from './inventory.js';
 import {
-  DAY, ACCENTS, DEFAULT_SETTINGS, fcol, wordsOf, fmtWords, fmtDate, download, fileName, docMd, initials, Icon, stop,
-} from './util.js';
+  DAY, ACCENTS, DEFAULT_SETTINGS, applyTheme, fcol, wordsOf, fmtWords, fmtDate, download, fileName, docMd, initials, Icon, stop, fmtDateIn, Overlay, MOD, plural } from './util.js';
 import { AuthScreen, ForcePasswordChange } from './auth-views.js';
 import { SettingsPage, AdminPage } from './settings.js';
 import { ShareDialog } from './share-views.js';
@@ -16,7 +15,11 @@ const CHEATS = [
   { syntax: '/', label: 'Im Editor: Menü für alle Blöcke (Überschriften, Medien, Tabellen, Kanban, Diagramme …)' },
   { syntax: '# ## ###  + Leerzeichen', label: 'Überschrift 1–3 (Kürzel am Zeilenanfang)' },
   { syntax: '- / 1. / [] / >  + Leerzeichen', label: 'Liste, nummerierte Liste, To-do, Zitat' },
-  { syntax: 'Strg+B / I / E / K', label: 'Fett, kursiv, Inline-Code, Link' },
+  { syntax: `${MOD}+B / I / E / K`, label: 'Fett, kursiv, Inline-Code, Link (mit Markierung)' },
+  { syntax: `${MOD}+K`, label: 'Schnellsuche (Dokumente, Ordner, Inventar, Befehle)' },
+  { syntax: `${MOD}+S`, label: 'Sofort speichern' },
+  { syntax: 'Tab / Umschalt+Tab', label: 'Listenpunkt ein- / ausrücken' },
+  { syntax: '[[', label: 'Andere Seite verlinken' },
   { syntax: '**fett**  *kursiv*  ~~durch~~', label: 'Hervorhebung (Markdown)' },
   { syntax: '```bash\nbefehl\n```', label: 'Code-Block mit Sprache' },
   { syntax: '- [ ] Aufgabe', label: 'To-do – erscheint im Dashboard' },
@@ -24,7 +27,7 @@ const CHEATS = [
   { syntax: '$a^2+b^2$', label: 'Formel (LaTeX) im Text' },
   { syntax: '{{date:2026-01-31}}  {{status:Offen|red}}', label: 'Datum, Uhrzeit, Status' },
   { syntax: '[Proxmox](/doc/<id>)', label: 'Link auf ein anderes Dokument' },
-  { syntax: 'Strg+Z / Strg+Umschalt+Z', label: 'Rückgängig / Wiederholen' },
+  { syntax: `${MOD}+Z / ${MOD}+Umschalt+Z`, label: 'Rückgängig / Wiederholen' },
 ];
 
 const UNKNOWN_FOLDER = { id: '', name: 'Ohne Ordner', icon: 'folder', hue: 250 };
@@ -50,6 +53,8 @@ function parseUrl() {
   if ((m = p.match(/^\/inventory\/([^/]+)$/))) return { page: 'inventory', assetId: decodeURIComponent(m[1]), newKind: qs.get('kind'), newAssetParent: qs.get('parent') };
   return { page: 'dashboard' };
 }
+// Adressen, die die App selbst darstellt (alles andere – z. B. /files/… – lädt der Browser)
+const isAppLink = href => /^\/($|[?#]|docs(\/|$|\?)|doc\/|new($|\?)|search($|\?)|notifications$|settings$|admin$|inventory(\/|$|\?))/.test(href);
 function urlFor(s) {
   const tag = s.tag ? '?tag=' + encodeURIComponent(s.tag) : '';
   switch (s.page) {
@@ -115,6 +120,11 @@ class App extends Component {
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('beforeunload', this.onBeforeUnload);
     window.addEventListener('focus', this.onFocus);
+    window.addEventListener('rackbook-theme', () => this.forceUpdate());
+    // Schmaler Bildschirm (Handy)?
+    this._mq = matchMedia('(max-width: 760px)');
+    this._mq.addEventListener('change', e => this.setState({ narrow: e.matches, mobileNav: false }));
+    this.setState({ narrow: this._mq.matches });
     this._poll = setInterval(() => this.refresh(), 120000);
   }
   componentWillUnmount() {
@@ -185,10 +195,21 @@ class App extends Component {
   settings() { return Object.assign({}, DEFAULT_SETTINGS, (this.state.user && this.state.user.settings) || {}); }
   canEdit() { return this.state.user && (this.state.user.role === 'editor' || this.state.user.role === 'admin'); }
   isAdmin() { return this.state.user && this.state.user.role === 'admin'; }
-  F(id) { return this.state.folders.find(f => f.id === id) || { ...UNKNOWN_FOLDER, id }; }
+  // Nachschlage-Tabellen (einmal je Datenstand statt bei jedem Zugriff die ganze Liste zu durchsuchen)
+  idx() {
+    const { docs, folders } = this.state;
+    if (this._idx && this._idx.docs === docs && this._idx.folders === folders) return this._idx;
+    const docById = new Map(docs.map(d => [d.id, d])), folderById = new Map(folders.map(f => [f.id, f]));
+    const kids = new Map(), subs = new Map();
+    for (const d of docs) if (d.parent) { if (!kids.has(d.parent)) kids.set(d.parent, []); kids.get(d.parent).push(d); }
+    for (const l of kids.values()) l.sort((a, b) => a.title.localeCompare(b.title, 'de'));
+    for (const f of folders) { const p = f.parent && folderById.has(f.parent) ? f.parent : null; if (!subs.has(p)) subs.set(p, []); subs.get(p).push(f); }
+    return (this._idx = { docs, folders, docById, folderById, kids, subs });
+  }
+  F(id) { return this.idx().folderById.get(id) || { ...UNKNOWN_FOLDER, id }; }
   // Ordnerbaum: Elternverweise auf unbekannte Ordner gelten als oberste Ebene.
-  fParent(f) { return f.parent && this.state.folders.some(x => x.id === f.parent) ? f.parent : null; }
-  subFolders(id) { return this.state.folders.filter(f => this.fParent(f) === (id || null)); }
+  fParent(f) { return f.parent && this.idx().folderById.has(f.parent) ? f.parent : null; }
+  subFolders(id) { return this.idx().subs.get(id || null) || []; }
   folderChain(id) {
     const out = [];
     let f = this.state.folders.find(x => x.id === id), guard = 0;
@@ -208,7 +229,7 @@ class App extends Component {
     walk(null, 0);
     return out;
   }
-  docChildren(id) { return this.state.docs.filter(d => d.parent === id).sort((a, b) => a.title.localeCompare(b.title, 'de')); }
+  docChildren(id) { return this.idx().kids.get(id) || []; }
   docChain(d) {
     const out = [];
     let cur = d && d.parent && this.doc(d.parent), guard = 0;
@@ -248,7 +269,7 @@ class App extends Component {
     const missing = keys.filter(k => s.openNodes[k] !== true);
     if (missing.length) this.setState({ openNodes: { ...s.openNodes, ...Object.fromEntries(missing.map(k => [k, true])) } });
   }
-  doc(id) { return this.state.docs.find(d => d.id === id); }
+  doc(id) { return this.idx().docById.get(id); }
   isDirty() { return !!(this.docEditor && this.docEditor.isPending()); }
 
   // ---------- Synchronisierte Blöcke ----------
@@ -290,7 +311,7 @@ class App extends Component {
   flash(msg, undoDocId, isErr) {
     clearTimeout(this._t);
     this.setState({ toast: msg, undoDocId: undoDocId || null, toastErr: !!isErr });
-    this._t = setTimeout(() => this.setState({ toast: null, undoDocId: null }), isErr ? 5000 : 3200);
+    this._t = setTimeout(() => this.setState({ toast: null, undoDocId: null }), isErr ? 6000 : undoDocId ? 9000 : 3500);
   }
   fail = e => {
     if (e instanceof ApiError && e.status === 401) return;
@@ -317,7 +338,13 @@ class App extends Component {
     if (page === 'doc' && !(extra && extra.read) && extra && extra.docId && this.canEdit() && this.settings().openMode === 'edit' && this.doc(extra.docId)) {
       return this.go('edit', { docId: extra.docId, newFolder: null, newParent: null, editKey: ++this.editSeq }, replace, force);
     }
-    const next = Object.assign({ page, menuId: null, filterOpen: false, userMenu: false }, extra || {});
+    // Ungespeicherte Änderungen am Inventar-Eintrag nicht stillschweigend verwerfen
+    if (!force && this.state.page === 'inventory' && this.invDirty && this.invDirty() && !(page === 'inventory' && extra && extra.assetId === this.state.assetId)) {
+      if (!confirm('Die Änderungen an diesem Inventar-Eintrag sind noch nicht gespeichert. Verwerfen?')) return false;
+    }
+    const next = Object.assign({ page, menuId: null, filterOpen: false, userMenu: false, mobileNav: false }, extra || {});
+    // Suchtext gehört nur zur Suche
+    if (page !== 'search' && !(extra && 'sq' in extra)) next.sq = '';
     this.setState(next, () => {
       const url = urlFor(this.state);
       if (url !== location.pathname + location.search) history[replace ? 'replaceState' : 'pushState'](null, '', url);
@@ -343,7 +370,7 @@ class App extends Component {
     }
     this.applyRoute(parseUrl(), true);
   };
-  onBeforeUnload = e => { if (this.isDirty()) { e.preventDefault(); e.returnValue = ''; } };
+  onBeforeUnload = e => { if (this.isDirty() || (this.state.page === 'inventory' && this.invDirty && this.invDirty())) { e.preventDefault(); e.returnValue = ''; } };
   onKey = e => {
     // Strg/⌘+K: Schnellsuche (im Editor nur ohne Markierung – mit Markierung setzt Strg+K einen Link)
     if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k' && this.state.boot === 'ready' && this.state.user && !e.defaultPrevented) {
@@ -376,10 +403,12 @@ class App extends Component {
     if (!name || !name.trim()) return;
     try { await api('/templates', { method: 'POST', body: { fromDoc: d.id, name: name.trim(), description: `Aus „${d.title}“` } }); await this.loadTemplates(); this.flash('Als Vorlage gespeichert'); } catch (e) { this.fail(e); }
   }
-  openTemplatesSettings() {
-    this.go('settings');
-    setTimeout(() => { const el = document.getElementById('panel-templates'); if (el) this.scrollToEl(el); }, 80);
+  openSettingsPanel(id) {
+    if (this.go('settings') === false) return;
+    const jump = (n = 0) => { const el = document.getElementById(id); if (el) this.scrollToEl(el); else if (n < 20) setTimeout(() => jump(n + 1), 60); };
+    setTimeout(jump, 60);
   }
+  openTemplatesSettings() { this.openSettingsPanel('panel-templates'); }
   // Umschalter Lesen/Bearbeiten
   setMode(d, mode) {
     if (mode === 'edit') { if (this.state.page !== 'edit') this.openEditor(d, null, true); return; }
@@ -474,7 +503,7 @@ class App extends Component {
     if (tooBig) return this.flash(`„${tooBig.name}“ ist zu groß.`, null, true);
     try {
       const payload = await Promise.all(files.map(async f => ({ name: f.name, text: await f.text() })));
-      const r = await api('/import', { method: 'POST', body: { files: payload, folder: this.state.folder || undefined } });
+      const r = await api('/import', { method: 'POST', body: { files: payload, folder: (this.state.page === 'docs' && this.state.folder) || undefined } });
       this.setState(s => ({ docs: r.docs.concat(s.docs) }));
       this.flash(r.docs.length + (r.docs.length === 1 ? ' Dokument' : ' Dokumente') + ' importiert');
     } catch (e) { this.fail(e); }
@@ -523,7 +552,8 @@ class App extends Component {
         e.preventDefault();
         const el = document.getElementById(href.slice(1));
         if (el) this.scrollToEl(el);
-      } else if (href.startsWith('/')) {
+      } else if (isAppLink(href) && !a.hasAttribute('download') && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button === 1)) {
+        // Nur Seiten der App selbst übernehmen – Dateien (/files/…), Downloads und „in neuem Tab öffnen“ bleiben beim Browser
         e.preventDefault();
         history.pushState(null, '', href);
         this.applyRoute(parseUrl());
@@ -548,10 +578,13 @@ class App extends Component {
       return html`<${ForcePasswordChange} user=${s.user} minLength=${s.passwordMinLength} onLogout=${() => this.logout()} onDone=${user => { this.setState({ boot: 'loading' }); this.enter(user); }} />`;
     }
     const st = this.settings();
+    applyTheme(st.theme || 'system');
     const acc = ACCENTS[st.accent] || ACCENTS.mint;
     document.documentElement.style.setProperty('--acc-soft', acc.soft);
     document.documentElement.style.setProperty('--acc-strong', acc.strong);
-    const expanded = !st.sidebarCollapsed;
+    // Schmale Bildschirme: Seitenleiste als Schublade (eigener, lokaler Zustand – ändert die Desktop-Einstellung nicht)
+    const narrow = s.narrow;
+    const expanded = narrow ? true : !st.sidebarCollapsed;
     const now = Date.now();
     const staleMs = (s.meta.staleDays || 90) * DAY;
     const touched = d => Math.max(d.updated, d.reviewed || 0);
@@ -568,6 +601,7 @@ class App extends Component {
         }} />
       </div>`}
       <div class="shell" onClick=${() => { if (s.menuId || s.filterOpen || s.userMenu) this.setState({ menuId: null, filterOpen: false, userMenu: false }); }}>
+        ${s.narrow && !s.mobileNav && html`<button type="button" class="nav-fab" aria-label="Navigation öffnen" title="Navigation" onClick=${e => { stop(e); this.setState({ mobileNav: true }); }}><span class="ms s20">menu</span></button>`}
         ${this.renderSidebar(expanded, staleDocs)}
         <main class="main" ref=${this.mainRef}>
           <div class="container">
@@ -622,7 +656,7 @@ class App extends Component {
     if (!this.canEdit()) return null;
     return html`
       <button type="button" class="btn btn-ghost" onClick=${() => this.triggerImport()}><span class="ms">upload_file</span>Importieren</button>
-      <button type="button" class="btn btn-primary" onClick=${() => this.newDocument(this.state.folder)}><span class="ms">add</span>Neues Dokument</button>`;
+      <button type="button" class="btn btn-primary" onClick=${() => this.newDocument(this.state.page === 'docs' ? this.state.folder : null)}><span class="ms">add</span>Neues Dokument</button>`;
   }
 
   // ---------- Seitenleiste ----------
@@ -637,7 +671,8 @@ class App extends Component {
       </button>`;
     const bms = s.docs.filter(d => d.bookmarked);
     return html`
-      <aside class=${'sidebar' + (expanded ? '' : ' collapsed')} style=${{ '--sb-w': s.sbWidth + 'px' }}>
+      ${s.narrow && s.mobileNav && html`<div class="drawer-back" onClick=${() => this.setState({ mobileNav: false })}></div>`}
+      <aside class=${'sidebar' + (expanded ? '' : ' collapsed') + (s.narrow ? ' drawer' + (s.mobileNav ? ' open' : '') : '')} style=${{ '--sb-w': s.sbWidth + 'px' }}>
         ${expanded && html`<div class="sb-resize" role="separator" aria-orientation="vertical" aria-label="Breite der Seitenleiste ändern" title="Ziehen zum Verbreitern, Doppelklick zum Zurücksetzen"
           onPointerDown=${this.startResize} onDblClick=${() => { this.setState({ sbWidth: 248 }); try { localStorage.removeItem('rackbook.sbWidth'); } catch { /* egal */ } }}></div>`}
         <div class="sb-scroll">
@@ -645,12 +680,12 @@ class App extends Component {
             <button type="button" class="brand" onClick=${() => this.go('dashboard')} title="Dashboard">
               <div class="logo">R</div>${expanded && html`<span class="brand-name">Rackbook</span>`}
             </button>
-            ${expanded && html`<button type="button" class="icon-btn" title="Seitenleiste einklappen" onClick=${e => { stop(e); this.setSettings({ sidebarCollapsed: true }); }}><span class="ms s19">keyboard_double_arrow_left</span></button>`}
+            ${expanded && html`<button type="button" class="icon-btn" title="Seitenleiste einklappen" onClick=${e => { stop(e); if (s.narrow) this.setState({ mobileNav: false }); else this.setSettings({ sidebarCollapsed: true }); }}><span class="ms s19">${s.narrow ? 'close' : 'keyboard_double_arrow_left'}</span></button>`}
           </div>
           ${!expanded && html`<div style=${{ display: 'flex', justifyContent: 'center' }}><button type="button" class="icon-btn" title="Ausklappen" onClick=${e => { stop(e); this.setSettings({ sidebarCollapsed: false }); }}><span class="ms s19">keyboard_double_arrow_right</span></button></div>`}
           ${expanded
-            ? html`<button type="button" class="sb-search sb-pal" onClick=${() => this.setState({ palette: true })} title="Schnellsuche (Strg+K)"><span class="ms">search</span><span class="grow">Suchen …</span><kbd>${/Mac/.test(navigator.platform) ? '⌘' : 'Strg'} K</kbd></button>`
-            : html`<button type="button" class="sb-search-btn" title="Schnellsuche (Strg+K)" onClick=${() => this.setState({ palette: true })}><span class="ms s16">search</span></button>`}
+            ? html`<button type="button" class="sb-search sb-pal" onClick=${() => this.setState({ palette: true })} title=${`Schnellsuche (${MOD}+K)`}><span class="ms">search</span><span class="grow">Suchen …</span><kbd>${MOD} K</kbd></button>`
+            : html`<button type="button" class="sb-search-btn" title=${`Schnellsuche (${MOD}+K)`} onClick=${() => this.setState({ palette: true })}><span class="ms s16">search</span></button>`}
           <nav class="nav">
             ${navItem('Dashboard', 'dashboard', s.page === 'dashboard', () => this.go('dashboard'))}
             ${navItem('Dokumente', 'article', (s.page === 'docs' && !s.folder) || s.page === 'doc' || s.page === 'edit', () => this.go('docs', { folder: null, tag: null, q: '' }))}
@@ -669,6 +704,7 @@ class App extends Component {
             ${expanded && html`<div class="nav-label">ORDNER</div>`}
             ${this.renderFolderTree(expanded)}
           </div>
+          ${this.canEdit() && html`<div class="nav">${navItem('Papierkorb', 'delete', false, () => this.openSettingsPanel('panel-trash'))}</div>`}
         </div>
         <div class="sb-foot">
           ${navItem('Einstellungen', 'settings', s.page === 'settings', () => this.go('settings'))}
@@ -758,7 +794,7 @@ class App extends Component {
       <div class="page" data-screen-label="Dashboard">
         <div class="page-head">
           <div><h1 class="h1">Übersicht</h1>
-            <p class="sub">${docs.length} Dokumente in ${s.folders.length} Ordnern${last ? ` · zuletzt bearbeitet ${fmtDate(last.updated)}` : ''}</p></div>
+            <p class="sub">${plural(docs.length, 'Dokument', 'Dokumente')} in ${plural(s.folders.length, 'Ordner', 'Ordnern')}${last ? ` · zuletzt bearbeitet ${fmtDateIn(last.updated)}` : ''}</p></div>
           ${this.headIcons()}
         </div>
         <div class="toolbar">
@@ -970,7 +1006,7 @@ class App extends Component {
             <div class="doc-meta">
               <button type="button" class="folder-chip" style=${{ background: c.background }} onClick=${openFolder}><span class="ms" style=${{ color: c.color }}>${f.icon}</span>${f.name}</button>
               ${d.tags.map(t => html`<button type="button" class="tag-chip" onClick=${() => this.go('docs', { folder: null, tag: t, q: '' })}>#${t}</button>`)}
-              <span class="small muted" style=${{ marginLeft: '5px', fontSize: '12px' }}>${d.createdBy ? `Von ${d.createdBy} · ` : ''}Geändert ${fmtDate(d.updated)}${d.updatedBy ? ` von ${d.updatedBy}` : ''} · ${fmtWords(wordsOf(plain(d.content)))}</span>
+              <span class="small muted" style=${{ marginLeft: '5px', fontSize: '12px' }}>${d.createdBy ? `Von ${d.createdBy} · ` : ''}Geändert ${fmtDateIn(d.updated)}${d.updatedBy ? ` von ${d.updatedBy}` : ''} · ${fmtWords(wordsOf(plain(d.content)))}</span>
               ${d.updatedVia === 'mcp' && html`<span class="pill editor" title="Zuletzt von einem KI-Assistenten über MCP geändert"><span class="ms s15">smart_toy</span>KI</span>`}
             </div>
           </div>
@@ -1107,12 +1143,12 @@ class App extends Component {
   // ---------- Modals ----------
   renderHelp() {
     return html`
-      <div class="overlay" onClick=${() => this.setState({ helpOpen: false })}>
-        <div class="modal" role="dialog" aria-modal="true" aria-label="Markdown-Spickzettel" onClick=${stop}>
+      <${Overlay} onClose=${() => this.setState({ helpOpen: false })}>
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Markdown-Spickzettel">
           <div class="modal-head"><h2 class="h2">Markdown-Spickzettel</h2><button type="button" class="ms close-btn" aria-label="Schließen" onClick=${() => this.setState({ helpOpen: false })}>close</button></div>
           ${CHEATS.map(c => html`<div class="cheat"><code>${c.syntax}</code><span>${c.label}</span></div>`)}
         </div>
-      </div>`;
+      </${Overlay}>`;
   }
   renderRevisions() {
     const s = this.state, d = this.doc(s.rev.docId);
@@ -1122,8 +1158,8 @@ class App extends Component {
     const sel = list.find(x => x.id === s.rev.sel) || current;
     const close = () => this.setState({ rev: null });
     return html`
-      <div class="overlay" onClick=${close}>
-        <div class="modal wide" role="dialog" aria-modal="true" aria-label="Versionsverlauf" onClick=${stop}>
+      <${Overlay} onClose=${close}>
+        <div class="modal wide" role="dialog" aria-modal="true" aria-label="Versionsverlauf">
           <div class="modal-head"><h2 class="h2">Versionsverlauf – ${d.title}</h2><button type="button" class="ms close-btn" aria-label="Schließen" onClick=${close}>close</button></div>
           <div class="rev-grid">
             <div class="rev-list">
@@ -1142,8 +1178,9 @@ class App extends Component {
             </div>
           </div>
         </div>
-      </div>`;
+      </${Overlay}>`;
   }
 }
 
+applyTheme();
 render(html`<${App} />`, document.getElementById('app'));

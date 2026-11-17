@@ -46,7 +46,7 @@ export class TemplatePicker extends Component {
               </button>`)}
             ${!list.length && html`<div class="md-empty">Keine passende Vorlage.</div>`}
           </div>
-          <div class="hint">Eigene Vorlagen: im Dokument über <b>⋯ → Als Vorlage speichern</b> oder unter Einstellungen → Vorlagen.</div>
+          <div class="hint">Eigene Vorlagen: im Dokument über den Knopf <b>Als Vorlage speichern</b> oder unter Einstellungen → Vorlagen.</div>
         </div>
       </div>`;
   }
