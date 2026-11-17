@@ -179,7 +179,7 @@ test('Freigaben enthalten signierte Datei-Links – nur für eingebundene Dateie
   const sh = await admin('POST', '/shares', { kind: 'doc', target: ids.doc, expiresDays: 1 });
   const p = await fetch(base + '/api/public/share', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: sh.data.token }) }).then(r => r.json());
   const signed = p.files[ids.png.id];
-  assert.match(signed, /^\/files\/[A-Za-z0-9_-]{20}\?e=\d+&s=[\w-]+$/);
+  assert.match(signed, /^\/files\/[A-Za-z0-9_-]{20}\?e=\d+&h=\d+&s=[\w-]+$/);
   assert.equal(Object.keys(p.files).length, 1, 'nur referenzierte Dateien');
   const ok = await fetch(base + signed);
   assert.equal(ok.status, 200);

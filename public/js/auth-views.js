@@ -24,7 +24,7 @@ export function AuthScreen({ state, onAuthed }) {
   useEffect(() => {
     if (mode === 'login' && sso.enabled && sso.autoRedirect && !ssoErr && !forceLocal) location.assign(SSO_URL);
   }, []);
-  const [f, setF] = useState({ username: '', displayName: '', password: '', password2: '', code: '' });
+  const [f, setF] = useState({ username: '', displayName: '', password: '', password2: '', code: '', setupToken: '' });
   const [ticket, setTicket] = useState(null);
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
@@ -49,7 +49,7 @@ export function AuthScreen({ state, onAuthed }) {
     // setup / register
     return run(async () => {
       if (f.password !== f.password2) throw new Error('Die Passwörter stimmen nicht überein.');
-      const r = await api('/auth/register', { method: 'POST', body: { username: f.username.trim(), displayName: f.displayName.trim(), password: f.password } });
+      const r = await api('/auth/register', { method: 'POST', body: { username: f.username.trim(), displayName: f.displayName.trim(), password: f.password, ...(mode === 'setup' && state.setupTokenRequired ? { setupToken: f.setupToken.trim() } : {}) } });
       if (r.pending) { setInfo(r.message); setMode('login'); setF({ ...f, password: '', password2: '' }); return; }
       finish(r);
     });
@@ -90,6 +90,11 @@ export function AuthScreen({ state, onAuthed }) {
               <input class="input" type="password" value=${f.password2} onInput=${set('password2')} autocomplete="new-password" required minlength=${min} maxlength="256" />
             </label>
             <div class="hint">Mindestens ${min} Zeichen. Nicht den Benutzernamen verwenden.</div>`}
+          ${mode === 'setup' && state.setupTokenRequired && html`
+            <label class="field"><span>Einrichtungs-Token</span>
+              <input class="input mono" value=${f.setupToken} onInput=${set('setupToken')} autocomplete="off" spellcheck="false" required maxlength="200" />
+            </label>
+            <div class="hint">Steht in der Konfiguration des Servers (<code class="inline-code">SETUP_TOKEN</code>).</div>`}
         `}
         ${(mode !== 'login' || showLocal) && html`<button class=${'btn ' + (mode === 'login' && sso.enabled ? 'btn-ghost' : 'btn-primary')} type="submit" disabled=${busy}>
           ${busy ? 'Bitte warten …' : mode === 'login' ? 'Anmelden' : mode === 'mfa' ? 'Bestätigen' : mode === 'setup' ? 'Administrator anlegen' : 'Registrieren'}

@@ -3,7 +3,7 @@ import { db, tx, getSetting } from '../db.js';
 import { config } from '../config.js';
 import {
   HttpError, RateLimiter, hashPassword, verifyPassword, dummyVerify, validatePassword,
-  signTicket, verifyTicket, verifyTotp, decrypt,
+  signTicket, verifyTicket, verifyTotp, decrypt, safeEqual,
 } from '../security.js';
 import { audit, clientIp, createSession, destroySession, publicUser, parseCookies, cookieSecure } from '../auth.js';
 import { publicOidcState, getOidcSettings, startLogin, readFlow, finishLogin, resolveUser, endSessionUrl } from '../oidc.js';
@@ -30,6 +30,7 @@ r.get('/state', (req, res) => {
   res.json({
     appName: config.appName,
     setupRequired,
+    setupTokenRequired: setupRequired && !!config.setupToken,
     registrationEnabled: setupRequired || !!getSetting('registration_enabled', config.allowRegistrationDefault),
     passwordMinLength: config.passwordMinLength,
     sso: publicOidcState(),
@@ -49,6 +50,9 @@ r.post('/register', rateLimit, async (req, res) => {
   // Transaktion, damit bei gleichzeitigen Registrierungen genau EIN Nutzer Admin wird.
   const result = tx(() => {
     const first = userCount() === 0;
+    if (first && config.setupToken && !(typeof req.body?.setupToken === 'string' && safeEqual(req.body.setupToken, config.setupToken))) {
+      throw new HttpError(403, 'Das Einrichtungs-Token ist falsch. Es steht in der Konfiguration des Servers (SETUP_TOKEN).');
+    }
     if (!first && !getSetting('registration_enabled', config.allowRegistrationDefault)) {
       throw new HttpError(403, 'Die Registrierung ist deaktiviert. Bitte einen Administrator um ein Konto bitten.');
     }
@@ -87,11 +91,18 @@ async function checkCredentials(req, username, password) {
     throw new HttpError(423, `Konto vorübergehend gesperrt. Bitte in ${Math.ceil((user.locked_until - Date.now()) / 60000)} Minuten erneut versuchen.`);
   }
   if (!(await verifyPassword(password, user.password_hash))) {
-    const fails = user.failed_logins + 1;
-    const lock = fails >= config.loginMaxAttempts ? Date.now() + config.loginLockMinutes * 60000 : 0;
-    db.prepare('UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?').run(lock ? 0 : fails, lock, user.id);
+    // Zähler in der Datenbank erhöhen (nicht aus dem vorher gelesenen Stand): parallele Fehlversuche zählen einzeln
+    const row = db.prepare('UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ? RETURNING failed_logins').get(user.id);
+    const lock = row && row.failed_logins >= config.loginMaxAttempts;
+    if (lock) db.prepare('UPDATE users SET failed_logins = 0, locked_until = ? WHERE id = ?').run(Date.now() + config.loginLockMinutes * 60000, user.id);
     audit(req, lock ? 'login.lockout' : 'login.failed', username, { reason: 'bad_password' });
     throw generic;
+  }
+  // Wurde das Konto während der Prüfung durch parallele Fehlversuche gesperrt?
+  const fresh = db.prepare('SELECT locked_until FROM users WHERE id = ?').get(user.id);
+  if (fresh && fresh.locked_until > Date.now()) {
+    audit(req, 'login.locked', username);
+    throw new HttpError(423, `Konto vorübergehend gesperrt. Bitte in ${Math.ceil((fresh.locked_until - Date.now()) / 60000)} Minuten erneut versuchen.`);
   }
   if (user.status === 'pending') throw new HttpError(403, 'Dein Konto wartet noch auf Freischaltung durch einen Administrator.');
   const sso = getOidcSettings();
@@ -112,6 +123,7 @@ r.post('/login', rateLimit, async (req, res) => {
   }
   req.user = publicUser(user);
   const csrfToken = createSession(req, res, user);
+  limiter.forgive(clientIp(req));
   audit(req, 'login.success', user.username);
   res.json({ user: publicUser(user), csrfToken });
 });
@@ -135,6 +147,7 @@ r.post('/login/mfa', rateLimit, (req, res) => {
   mfaAttempts.reset('u' + t.uid);
   req.user = publicUser(user);
   const csrfToken = createSession(req, res, user);
+  limiter.forgive(clientIp(req));
   audit(req, 'login.success', user.username, { mfa: true });
   res.json({ user: publicUser(user), csrfToken });
 });

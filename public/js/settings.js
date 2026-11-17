@@ -285,7 +285,7 @@ function UserRow({ app, u, reload }) {
   const me = app.state.user.id === u.id;
   const patch = async body => { try { await api('/admin/users/' + u.id, { method: 'PATCH', body }); app.flash('Benutzer aktualisiert'); } catch (e) { app.flash(e.message, null, true); } reload(); };
   const resetPw = async () => {
-    const pw = prompt(`Neues vorläufiges Passwort für „${u.username}“ (mind. ${app.state.passwordMinLength} Zeichen). Der Benutzer muss es bei der nächsten Anmeldung ändern:`);
+    const pw = prompt(`Neues vorläufiges Passwort für „${u.username}“ (mind. ${app.state.passwordMinLength} Zeichen). Der Benutzer muss es bei der nächsten Anmeldung ändern; seine Sitzungen und KI-Zugriffstokens werden beendet:`);
     if (!pw) return;
     try { await api(`/admin/users/${u.id}/password`, { method: 'POST', body: { password: pw } }); reload(); app.flash('Passwort zurückgesetzt'); } catch (e) { app.flash(e.message, null, true); }
   };
@@ -310,8 +310,8 @@ function UserRow({ app, u, reload }) {
         ${u.locked && html`<button type="button" class="btn btn-ghost sm" onClick=${() => patch({ unlock: true })}>Entsperren</button>`}
         ${!me && u.status === 'active' && html`<button type="button" class="btn btn-ghost sm" onClick=${() => patch({ status: 'disabled' })}>Deaktivieren</button>`}
         ${!me && u.status === 'disabled' && html`<button type="button" class="btn btn-ghost sm" onClick=${() => patch({ status: 'active' })}>Aktivieren</button>`}
-        <button type="button" class="btn btn-ghost sm" onClick=${resetPw}>Passwort</button>
-        ${u.totpEnabled && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/reset-2fa', 'POST', '2FA zurückgesetzt', `2FA für „${u.username}“ zurücksetzen?`)}>2FA zurücksetzen</button>`}
+        ${!me && html`<button type="button" class="btn btn-ghost sm" onClick=${resetPw}>Passwort</button>`}
+        ${!me && u.totpEnabled && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/reset-2fa', 'POST', '2FA zurückgesetzt', `2FA für „${u.username}“ zurücksetzen?`)}>2FA zurücksetzen</button>`}
         ${!me && u.sessions > 0 && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/sessions', 'DELETE', 'Sitzungen beendet')}>Abmelden</button>`}
         ${u.shares > 0 && html`<button type="button" class="btn btn-ghost sm" title="Alle öffentlichen Links dieses Benutzers widerrufen" onClick=${() => act('/shares', 'DELETE', 'Alle Freigaben widerrufen – Inhalte sind wieder privat', `Alle ${u.shares} öffentlichen Freigaben von „${u.username}“ widerrufen?`)}><span class="ms s15">link_off</span> Privat machen (${u.shares})</button>`}
         ${!me && html`<button type="button" class="btn btn-danger sm" onClick=${() => act('', 'DELETE', 'Benutzer gelöscht', `Benutzer „${u.username}“ endgültig löschen?`)}>Löschen</button>`}

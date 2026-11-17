@@ -162,7 +162,7 @@ export async function resolvePublic(token, password, ip) {
   const synced = getSynced(new Set(docs.flatMap(d => [...syncedRefs(d.content)])));
   const fileIds = new Set([...docs.map(d => d.content), ...Object.values(synced)].flatMap(c => [...fileRefs(c)]));
   const files = {};
-  for (const id of fileIds) if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) files[id] = signedFileUrl(id);
+  for (const id of fileIds) if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) files[id] = signedFileUrl(id, sh);
   const ed = getEditorSettings();
   // Inventar-Karten (::asset) in freigegebenen Dokumenten – ohne interne Notizen und Verknüpfungen
   const assets = {};

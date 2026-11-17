@@ -561,6 +561,8 @@ function renderBlock(b, ctx, st) {
       if (!b.src) return '';
       const src = mediaSrc(b.src, ctx);
       if (!src) return `<div class="md-media-missing"><span class="ms">picture_as_pdf</span>${esc(b.name || 'PDF')}</div>`;
+      // Fremde Adressen nicht als Rahmen einbetten (läge außerhalb der Sandbox), sondern verlinken
+      if (!fileId(b.src)) return `<a class="md-file" href="${esc(src)}" target="_blank" rel="noopener noreferrer nofollow"><span class="ms">picture_as_pdf</span><span class="md-file-n">${esc(b.name || src)}</span><span class="ms">open_in_new</span></a>`;
       return `<div class="md-pdf"><iframe class="md-pdf-frame" src="${esc(src)}" title="${esc(b.name || 'PDF')}" loading="lazy"></iframe><a class="md-pdf-link" href="${esc(src)}" target="_blank" rel="noopener"><span class="ms">open_in_new</span>${esc(b.name || 'PDF öffnen')}</a></div>`;
     }
     case 'file': {
