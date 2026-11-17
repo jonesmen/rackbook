@@ -221,6 +221,8 @@ const MIGRATIONS = [
   `,
 ];
 
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
 export function migrate() {
   const { user_version: v } = db.prepare('PRAGMA user_version').get();
   for (let i = v; i < MIGRATIONS.length; i++) {

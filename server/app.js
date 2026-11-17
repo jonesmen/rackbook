@@ -12,7 +12,7 @@ import adminRoutes from './routes/admin.js';
 import { DEFAULT_FOLDERS, sampleDocs } from './seed.js';
 import { mcpHandler, getMcpSettings, grantableScopes, mcpEndpoint, hasValidToken } from './mcp.js';
 import { shareRoutes, publicRoutes, getShareSettings } from './routes/shares.js';
-import { fileApi, serveFile, getEditorSettings, cleanupFiles, editorCspExtra } from './files.js';
+import { fileApi, serveFile, getEditorSettings, cleanupFiles, sweepOrphanFiles, editorCspExtra } from './files.js';
 import { syncedApi, cleanupSynced } from './synced.js';
 import { templateApi } from './templates.js';
 import { assetApi } from './assets.js';
@@ -40,7 +40,10 @@ export function housekeeping() {
   db.prepare('DELETE FROM shares WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR (expires_at IS NOT NULL AND expires_at < ?)').run(now - 30 * 86400000, now - 30 * 86400000);
   // Nicht mehr verwendete Dateien und synchronisierte Blöcke
   cleanupFiles();
+  sweepOrphanFiles();
   cleanupSynced();
+  // Datenbank-Pflege: Statistiken aktuell halten, WAL-Datei klein halten
+  try { db.exec('PRAGMA optimize; PRAGMA wal_checkpoint(PASSIVE);'); } catch { /* nicht kritisch */ }
 }
 
 export function createApp() {
@@ -58,6 +61,12 @@ export function createApp() {
       proxyWarned = true;
       console.warn('Hinweis: Anfragen kommen über einen Reverse Proxy (X-Forwarded-For), aber TRUST_PROXY ist nicht gesetzt. Für korrekte IP-Adressen z. B. TRUST_PROXY=1 setzen.');
     }
+    next();
+  });
+  // Zugriffsprotokoll (optional, ACCESS_LOG=true): eine Zeile je API-Anfrage, ohne Inhalte
+  if (config.accessLog) app.use((req, res, next) => {
+    const t = Date.now();
+    res.on('finish', () => { if (req.path.startsWith('/api/') || req.path === '/mcp' || req.path.startsWith('/files/')) console.log(`${new Date().toISOString()} ${req.ip || '-'} ${req.method} ${req.path} ${res.statusCode} ${Date.now() - t}ms${req.user ? ' ' + req.user.username : ''}`); });
     next();
   });
   app.get('/healthz', (req, res) => { db.prepare('SELECT 1').get(); res.json({ status: 'ok' }); });

@@ -1,6 +1,6 @@
 import { TemplatesPanel } from './templates-views.js';
 import { html, useState, useEffect } from '/vendor/preact-htm.js';
-import { api } from './api.js';
+import { api, getCsrf } from './api.js';
 import { McpPanel, McpAdmin } from './mcp-views.js';
 import { SharesPanel, SharesAdmin } from './share-views.js';
 import { Icon, Toggle, fcol, fmtDate, fmtDateTime, describeUA, ROLE_LABEL } from './util.js';
@@ -250,14 +250,16 @@ function DataPanel({ app }) {
   const restoreRef = { current: null };
   return html`
     <div class="panel" style=${{ gap: '11px' }}>
-      <${PanelHead} title="Daten" desc="Alle Dokumente werden zentral auf dem Server gespeichert (SQLite im Docker-Volume). Regelmäßige Exporte bzw. Volume-Backups werden empfohlen." />
+      <${PanelHead} title="Daten" desc=${'Alle Dokumente werden zentral auf dem Server gespeichert. Export und Import hier übertragen Inhalte (Dokumente, Ordner, Vorlagen, Inventar).' + (app.isAdmin() ? ' Vollständige Sicherungen inklusive Dateien, Benutzern und Versionen findest du unter Verwaltung → Sicherungen.' : '')} />
       <div class="btn-row">
         <button type="button" class="btn btn-primary md" onClick=${() => app.exportMd()}><${Icon} name="download" />Alles als Markdown</button>
-        <button type="button" class="btn btn-ghost md" onClick=${() => app.exportJson()}><${Icon} name="data_object" />JSON-Backup</button>
-        ${app.isAdmin() && html`<a class="btn btn-ghost md" href="/api/admin/backup?files" download><${Icon} name="inventory_2" />Komplett-Backup inkl. Dateien</a>`}
+        ${app.isAdmin()
+          ? html`<a class="btn btn-ghost md" href="/api/admin/backup" download><${Icon} name="data_object" />Inhalte als JSON</a>`
+          : html`<button type="button" class="btn btn-ghost md" onClick=${() => app.exportJson()}><${Icon} name="data_object" />Dokumente als JSON</button>`}
+        ${app.isAdmin() && html`<button type="button" class="btn btn-ghost md" onClick=${() => app.go('admin', { adminTab: 'backup' })}><${Icon} name="backup" />Sicherungen</button>`}
         ${app.canEdit() && html`<button type="button" class="btn btn-ghost md" onClick=${() => app.triggerImport()}><${Icon} name="upload_file" />.md importieren</button>`}
         ${app.isAdmin() && html`
-          <button type="button" class="btn btn-ghost md" onClick=${() => restoreRef.current && restoreRef.current.click()}><${Icon} name="settings_backup_restore" />Backup einspielen</button>
+          <button type="button" class="btn btn-ghost md" onClick=${() => restoreRef.current && restoreRef.current.click()}><${Icon} name="settings_backup_restore" />JSON einspielen</button>
           <input type="file" accept=".json,application/json" hidden ref=${el => { restoreRef.current = el; }} onChange=${e => { const f = e.target.files[0]; e.target.value = ''; if (f) app.restoreBackup(f); }} />
           <button type="button" class="btn btn-danger md" onClick=${() => app.loadSamples()}><${Icon} name="restart_alt" />Beispieldaten wiederherstellen</button>`}
       </div>
@@ -367,7 +369,84 @@ function SystemSettings({ app }) {
 }
 
 // ---------------- Editor & Medien ----------------
-const fmtBytes = n => (n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1).replace('.', ',') + ' MB');
+const fmtBytes = n => (n < 1048576 ? Math.round(n / 1024) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : (n / 1073741824).toFixed(1).replace('.', ',') + ' GB');
+
+// ---------------- Sicherungen (vollständige Abbilder auf dem Server) ----------------
+function BackupAdmin({ app }) {
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState('');
+  const upRef = { current: null };
+  const load = () => api('/admin/snapshots').then(setD).catch(e => app.flash(e.message, null, true));
+  useEffect(() => { load(); }, []);
+  const run = async (label, fn, msg) => {
+    setBusy(label);
+    try { await fn(); if (msg) app.flash(msg); await load(); } catch (e) { app.flash(e.message, null, true); }
+    setBusy('');
+  };
+  const create = () => run('Sicherung wird erstellt …', () => api('/admin/snapshots', { method: 'POST', body: {} }), 'Sicherung erstellt');
+  const remove = s => { if (confirm(`Sicherung „${s.name}“ löschen?`)) run('', () => api('/admin/snapshots/' + encodeURIComponent(s.name), { method: 'DELETE' }), 'Sicherung gelöscht'); };
+  const upload = file => run('Sicherung wird hochgeladen und geprüft …', async () => {
+    const res = await fetch('/api/admin/snapshots/upload', { method: 'POST', body: file, credentials: 'same-origin', headers: { 'Content-Type': 'application/gzip', 'X-CSRF-Token': getCsrf() || '', Accept: 'application/json' } });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && data.error) || 'Hochladen fehlgeschlagen.');
+  }, 'Sicherung hochgeladen – sie steht jetzt in der Liste');
+  const restore = async s => {
+    const typed = prompt(`Sicherung vom ${fmtDateTime(s.created)} wiederherstellen?\n\nDabei wird der GESAMTE aktuelle Stand ersetzt: Dokumente, Dateien, Benutzer, Einstellungen. Änderungen seit dieser Sicherung gehen verloren (der bisherige Stand bleibt einmalig im Datenordner unter „before-restore“ liegen). Rackbook startet danach neu, alle müssen sich neu anmelden.\n\nZum Bestätigen WIEDERHERSTELLEN eintippen:`);
+    if (typed !== 'WIEDERHERSTELLEN') { if (typed !== null) app.flash('Nicht bestätigt – nichts geändert.', null, true); return; }
+    setBusy('Sicherung wird wiederhergestellt – Rackbook startet gleich neu …');
+    try {
+      await api(`/admin/snapshots/${encodeURIComponent(s.name)}/restore`, { method: 'POST', body: { confirm: 'WIEDERHERSTELLEN' } });
+      // Warten, bis der Server wieder antwortet, dann neu laden
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try { if ((await fetch('/healthz', { cache: 'no-store' })).ok) break; } catch { /* startet noch */ }
+      }
+      location.assign('/');
+    } catch (e) { setBusy(''); app.flash(e.message, null, true); }
+  };
+  if (!d) return html`<div class="panel"><div class="muted small">Wird geladen …</div></div>`;
+  const s = d.settings;
+  const save = patch => run('', () => api('/admin/snapshots/settings', { method: 'PUT', body: patch }), 'Einstellungen gespeichert');
+  return html`
+    <div class="panel tight">
+      <${PanelHead} title="Sicherungen" desc="Eine Sicherung ist ein vollständiges Abbild: Dokumente mit Versionen, Dateien, Inventar, Vorlagen, Benutzer, Freigaben und Einstellungen. Sie liegt im Datenordner des Servers – für den Ernstfall zusätzlich herunterladen oder den Ordner in die eigene Datensicherung aufnehmen." />
+      <div class="set-row static">
+        <div><div class="t">Automatische Sicherung</div><div class="s">${d.last ? (d.last.ok ? `Letzte Sicherung: ${fmtDateTime(d.last.at)}` : `Letzter Versuch am ${fmtDateTime(d.last.at)} fehlgeschlagen: ${d.last.error}`) : 'Noch keine Sicherung erstellt'}</div></div>
+        <select class="input" style=${{ width: '150px' }} value=${s.schedule} onChange=${e => save({ schedule: e.target.value })}>
+          <option value="off">Aus</option><option value="daily">Täglich</option><option value="weekly">Wöchentlich</option>
+        </select>
+      </div>
+      <div class="set-row static">
+        <div><div class="t">Aufbewahren</div><div class="s">Anzahl automatischer Sicherungen; ältere werden gelöscht. Manuell erstellte und hochgeladene bleiben, bis du sie löschst.</div></div>
+        <input class="input" type="number" min="1" max="60" style=${{ width: '90px' }} value=${s.keep} onChange=${e => save({ keep: Number(e.target.value) })} />
+      </div>
+      <div class="set-row static">
+        <div><div class="t">Speicherplatz</div><div class="s">Sicherungen belegen ${fmtBytes(d.disk.backups)}${d.disk.free !== null ? ` · frei im Datenordner: ${fmtBytes(d.disk.free)}` : ''} · Ablage: <span class="mono">${d.dir}</span></div></div>
+        <div class="btn-row">
+          <button type="button" class="btn btn-primary sm" disabled=${!!busy} onClick=${create}><${Icon} name="backup" />Jetzt sichern</button>
+          <button type="button" class="btn btn-ghost sm" disabled=${!!busy} onClick=${() => upRef.current && upRef.current.click()}><${Icon} name="upload" />Sicherung hochladen</button>
+          <input type="file" accept=".gz,.tar.gz,application/gzip" hidden ref=${el => { upRef.current = el; }} onChange=${e => { const f = e.target.files[0]; e.target.value = ''; if (f) upload(f); }} />
+        </div>
+      </div>
+      ${busy && html`<div class="banner warn"><span class="ms">hourglass_top</span><div class="grow">${busy}</div></div>`}
+      <div class="table-scroll"><table class="utable">
+        <thead><tr><th>Erstellt</th><th>Art</th><th>Größe</th><th class="r">Aktionen</th></tr></thead>
+        <tbody>
+          ${d.snapshots.map(x => html`<tr>
+            <td>${fmtDateTime(x.created)}<div class="xs muted mono">${x.name}</div></td>
+            <td>${{ auto: 'Automatisch', manuell: 'Manuell', upload: 'Hochgeladen' }[x.kind] || x.kind}</td>
+            <td>${fmtBytes(x.size)}</td>
+            <td class="r"><div style=${{ display: 'flex', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <a class="btn btn-ghost sm" href=${'/api/admin/snapshots/' + encodeURIComponent(x.name)} download><${Icon} name="download" />Herunterladen</a>
+              <button type="button" class="btn btn-ghost sm" disabled=${!!busy} onClick=${() => restore(x)}><${Icon} name="settings_backup_restore" />Wiederherstellen</button>
+              <button type="button" class="btn btn-danger sm" disabled=${!!busy} onClick=${() => remove(x)}>Löschen</button>
+            </div></td>
+          </tr>`)}
+          ${!d.snapshots.length && html`<tr><td colspan="4" class="muted">Noch keine Sicherungen vorhanden.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
 function EditorSettings({ app }) {
   const [s, setS] = useState(null);
   const [stats, setStats] = useState(null);
@@ -385,6 +464,10 @@ function EditorSettings({ app }) {
       <div class="set-row static">
         <div><div class="t">Maximale Dateigröße</div><div class="s">Pro Datei, in MB${stats ? ` · aktuell ${stats.count} Datei(en), ${fmtBytes(stats.bytes)}` : ''}</div></div>
         <input class="input" type="number" min="1" max="2048" style=${{ width: '90px' }} value=${s.uploadMaxMb} onChange=${e => save({ uploadMaxMb: Number(e.target.value) })} />
+      </div>
+      <div class="set-row static">
+        <div><div class="t">Speicherplatz für Dateien</div><div class="s">Obergrenze für alle hochgeladenen Dateien zusammen, in MB. 0 = unbegrenzt${stats ? ` · belegt: ${fmtBytes(stats.bytes)}` : ''}</div></div>
+        <input class="input" type="number" min="0" max="1048576" style=${{ width: '90px' }} value=${s.uploadQuotaMb} onChange=${e => save({ uploadQuotaMb: Number(e.target.value) })} />
       </div>
       <${SetToggle} title="Externe Inhalte erlauben" desc="YouTube, Vimeo, Loom, Figma, Miro, Google Drive, iframes und Bilder von https-Adressen einbetten. Aus: nur Links werden angezeigt." on=${s.embeds} onClick=${() => save({ embeds: !s.embeds })} />
       <div class="set-row static">
@@ -500,7 +583,7 @@ const AUDIT_LABEL = {
   'user.2fa_disabled': '2FA deaktiviert', 'session.revoked': 'Sitzung beendet', 'session.revoked_all': 'Alle anderen Sitzungen beendet',
   'admin.user_created': 'Benutzer angelegt', 'admin.user_updated': 'Benutzer geändert', 'admin.password_reset': 'Passwort zurückgesetzt',
   'admin.2fa_reset': '2FA zurückgesetzt', 'admin.sessions_revoked': 'Sitzungen eines Benutzers beendet', 'admin.user_deleted': 'Benutzer gelöscht',
-  'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.editor_updated': 'Editor-Einstellungen geändert', 'file.uploaded': 'Datei hochgeladen', 'synced.created': 'Synchronisierten Block erstellt', 'template.created': 'Vorlage erstellt', 'template.updated': 'Vorlage geändert', 'template.deleted': 'Vorlage gelöscht', 'asset.created': 'Inventar-Eintrag angelegt', 'asset.updated': 'Inventar-Eintrag geändert', 'asset.deleted': 'Inventar-Eintrag gelöscht', 'admin.backup_exported': 'Backup exportiert', 'admin.backup_restored': 'Backup eingespielt',
+  'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.editor_updated': 'Editor-Einstellungen geändert', 'file.uploaded': 'Datei hochgeladen', 'synced.created': 'Synchronisierten Block erstellt', 'template.created': 'Vorlage erstellt', 'template.updated': 'Vorlage geändert', 'template.deleted': 'Vorlage gelöscht', 'asset.created': 'Inventar-Eintrag angelegt', 'asset.updated': 'Inventar-Eintrag geändert', 'asset.deleted': 'Inventar-Eintrag gelöscht', 'admin.backup_exported': 'Inhalte exportiert (JSON)', 'admin.backup_restored': 'JSON eingespielt', 'admin.backup_settings': 'Sicherungs-Einstellungen geändert', 'admin.snapshot_created': 'Sicherung erstellt', 'admin.snapshot_uploaded': 'Sicherung hochgeladen', 'admin.snapshot_downloaded': 'Sicherung heruntergeladen', 'admin.snapshot_deleted': 'Sicherung gelöscht', 'admin.snapshot_restored': 'Sicherung wiederhergestellt',
   'admin.sample_data': 'Beispieldaten geladen', 'doc.created': 'Dokument erstellt', 'doc.updated': 'Dokument geändert', 'doc.deleted': 'Dokument gelöscht',
   'doc.restored': 'Dokument wiederhergestellt', 'doc.purged': 'Dokument endgültig gelöscht', 'doc.reviewed': 'Als geprüft markiert',
   'doc.imported': 'Dokumente importiert', 'doc.revision_restored': 'Version wiederhergestellt', 'folder.created': 'Ordner angelegt',
@@ -550,7 +633,7 @@ function AuditLog({ app }) {
 }
 
 export function AdminPage({ app }) {
-  const [tab, setTab] = useState('users');
+  const [tab, setTab] = useState(app.state.adminTab || 'users');
   const [users, setUsers] = useState([]);
   const reload = () => api('/admin/users').then(r => { setUsers(r.users); app.setState({ pendingUsers: r.users.filter(u => u.status === 'pending').length }); }).catch(e => app.flash(e.message, null, true));
   useEffect(() => { reload(); }, []);
@@ -558,7 +641,7 @@ export function AdminPage({ app }) {
     <div class="page g18" style=${{ maxWidth: '1100px' }} data-screen-label="Verwaltung">
       <div><h1 class="h1">Verwaltung</h1><p class="sub">Benutzer, Rollen und Systemeinstellungen.</p></div>
       <div class="tabs" role="tablist">
-        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['mcp', 'KI-Zugriff'], ['shares', 'Freigaben'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
+        ${[['users', 'Benutzer'], ['system', 'System'], ['sso', 'Single Sign-On'], ['mcp', 'KI-Zugriff'], ['shares', 'Freigaben'], ['backup', 'Sicherungen'], ['audit', 'Audit-Log']].map(([k, l]) => html`<button type="button" role="tab" aria-selected=${tab === k} class=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>
       ${tab === 'users' && html`
         <div class="panel">
@@ -573,6 +656,7 @@ export function AdminPage({ app }) {
       ${tab === 'sso' && html`<${SsoSettings} app=${app} />`}
       ${tab === 'mcp' && html`<${McpAdmin} app=${app} />`}
       ${tab === 'shares' && html`<${SharesAdmin} app=${app} />`}
+      ${tab === 'backup' && html`<${BackupAdmin} app=${app} />`}
       ${tab === 'audit' && html`<${AuditLog} app=${app} />`}
     </div>`;
 }

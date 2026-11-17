@@ -1,7 +1,7 @@
 // Dateiablage für den Editor: Bilder, Videos, Audio, PDFs und beliebige Anhänge.
 // Der Dateityp wird anhand der ersten Bytes bestimmt (nicht anhand von Name oder Client-Angabe);
 // nur bekannte, unkritische Typen werden im Browser angezeigt, alles andere wird als Download ausgeliefert.
-import { createWriteStream, mkdirSync, existsSync, unlinkSync, renameSync, readFileSync, writeFileSync } from 'node:fs';
+import { createWriteStream, mkdirSync, existsSync, unlinkSync, renameSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
@@ -15,6 +15,7 @@ const ctrlStrip = s => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, '');
 export const EDITOR_DEFAULTS = {
   uploads: true, // Datei-Uploads erlaubt
   uploadMaxMb: 25, // maximale Dateigröße
+  uploadQuotaMb: 0, // Gesamtgröße aller Dateien (0 = unbegrenzt)
   embeds: true, // externe Inhalte (YouTube, Figma, iframes, externe Bilder) erlauben
   drawioUrl: 'https://embed.diagrams.net', // Draw.io-Editor (öffentlich oder selbst gehostet)
 };
@@ -22,6 +23,7 @@ export const EDITOR_DEFAULTS = {
 export function getEditorSettings() {
   const s = { ...EDITOR_DEFAULTS, ...(getSetting('editor', {}) || {}) };
   s.uploadMaxMb = Math.min(2048, Math.max(1, Math.round(Number(s.uploadMaxMb) || EDITOR_DEFAULTS.uploadMaxMb)));
+  s.uploadQuotaMb = Math.min(1048576, Math.max(0, Math.round(Number(s.uploadQuotaMb) || 0)));
   s.uploads = !!s.uploads;
   s.embeds = !!s.embeds;
   s.drawioUrl = normDrawioUrl(s.drawioUrl) || '';
@@ -91,6 +93,14 @@ export function normFileName(n) {
 }
 
 // ---------- Ablage ----------
+// Gesamt-Kontingent für hochgeladene Dateien (falls eingestellt)
+export function checkQuota(bytes) {
+  const q = getEditorSettings().uploadQuotaMb;
+  if (!q) return;
+  const used = db.prepare('SELECT COALESCE(SUM(size), 0) AS b FROM files').get().b;
+  if (used + bytes > q * 1048576) throw new HttpError(413, `Der Speicherplatz für Dateien ist aufgebraucht (${q} MB). Ein Administrator kann das Kontingent unter Verwaltung → Editor & Medien erhöhen.`);
+}
+
 export async function storeUpload(req, { name, docId, userId, maxBytes }) {
   const id = randomToken(15);
   mkdirSync(join(filesDir, id.slice(0, 2)), { recursive: true });
@@ -117,6 +127,7 @@ export async function storeUpload(req, { name, docId, userId, maxBytes }) {
   const { bytesRead } = await fh.read(head, 0, 4096, 0);
   await fh.close();
   const mime = sniff(head.subarray(0, bytesRead), name);
+  try { checkQuota(size); } catch (e) { try { unlinkSync(tmp); } catch { /* weg */ } throw e; }
   renameSync(tmp, pathOf(id));
   const row = { id, name: normFileName(name), mime, size, sha256: hash.digest('hex'), doc_id: docId || null, created_by: userId ?? null, created_at: Date.now() };
   db.prepare('INSERT INTO files (id, name, mime, size, sha256, doc_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -127,6 +138,7 @@ export async function storeUpload(req, { name, docId, userId, maxBytes }) {
 // Datei aus einem Puffer speichern (z. B. Upload über den MCP-Server)
 export function storeBuffer(buf, { name, docId, userId }) {
   if (!buf || !buf.length) throw new HttpError(400, 'Die Datei ist leer.');
+  checkQuota(buf.length);
   const id = randomToken(15);
   mkdirSync(join(filesDir, id.slice(0, 2)), { recursive: true });
   writeFileSync(pathOf(id), buf, { mode: 0o600, flag: 'wx' });
@@ -193,8 +205,30 @@ export function cleanupFiles() {
   for (const r of db.prepare('SELECT content FROM documents').iterate()) fileRefs(r.content).forEach(x => used.add(x));
   for (const r of db.prepare('SELECT content FROM revisions').iterate()) fileRefs(r.content).forEach(x => used.add(x));
   for (const r of db.prepare('SELECT content FROM synced_blocks').iterate()) fileRefs(r.content).forEach(x => used.add(x));
+  // Auch Vorlagen und Inventar-Einträge können Dateien einbinden
+  for (const r of db.prepare('SELECT content FROM templates').iterate()) fileRefs(r.content).forEach(x => used.add(x));
+  for (const r of db.prepare('SELECT data FROM assets').iterate()) fileRefs(r.data).forEach(x => used.add(x));
   let n = 0;
   for (const r of rows) if (!used.has(r.id)) { deleteFile(r.id); n++; }
+  return n;
+}
+
+// Dateien auf der Platte, die die Datenbank nicht (mehr) kennt – z. B. abgebrochene Uploads (.part) oder Reste
+// einer fehlgeschlagenen Wiederherstellung – nach einem Tag entfernen.
+export function sweepOrphanFiles() {
+  const cutoff = Date.now() - 86400000;
+  let n = 0;
+  for (const sub of readdirSync(filesDir, { withFileTypes: true })) {
+    if (!sub.isDirectory()) continue;
+    for (const name of readdirSync(join(filesDir, sub.name))) {
+      const p = join(filesDir, sub.name, name);
+      try {
+        if (statSync(p).mtimeMs > cutoff) continue;
+        if (/^[A-Za-z0-9_-]{20}$/.test(name) && db.prepare('SELECT 1 FROM files WHERE id = ?').get(name)) continue;
+        unlinkSync(p); n++;
+      } catch { /* inzwischen weg */ }
+    }
+  }
   return n;
 }
 
@@ -228,6 +262,7 @@ fileApi.post('/', requireRole('editor'), async (req, res) => {
   const len = Number(req.get('content-length') || 0);
   const maxBytes = s.uploadMaxMb * 1048576;
   if (len > maxBytes) throw new HttpError(413, `Datei zu groß (max. ${s.uploadMaxMb} MB).`);
+  checkQuota(len);
   const name = String(req.query.name || 'datei');
   const docId = req.query.doc && db.prepare('SELECT id FROM documents WHERE id = ?').get(String(req.query.doc)) ? String(req.query.doc) : null;
   const file = await storeUpload(req, { name, docId, userId: req.user.id, maxBytes });
