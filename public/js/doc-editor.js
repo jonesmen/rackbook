@@ -6,6 +6,17 @@ import { hydrate, baseSortClick } from './hydrate.js';
 import { BlockEditor } from './editor/editor.js';
 import { fmtDate, wordsOf, fmtWords, initials } from './util.js';
 import { applyPlaceholders } from './templates-views.js';
+import { lineDiff, diffHunks } from './diff.js';
+
+// Lokaler Entwurf als Sicherheitsnetz (Sitzung abgelaufen, Server nicht erreichbar, Tab geschlossen)
+const draftKey = id => 'rackbook.draft.' + (id || 'new');
+function readDraft(id) {
+  try { const d = JSON.parse(localStorage.getItem(draftKey(id)) || 'null'); return d && typeof d.content === 'string' ? d : null; } catch { return null; }
+}
+function writeDraft(id, s) {
+  try { localStorage.setItem(draftKey(id), JSON.stringify({ title: s.title, tags: s.tags, content: s.content, version: s.version, ts: Date.now() })); } catch { /* Speicher voll oder gesperrt */ }
+}
+function clearDraft(id) { try { localStorage.removeItem(draftKey(id)); } catch { /* egal */ } }
 
 // Gerendertes Markdown (Lesen): Mathe/Mermaid nachladen, Datenbanken sortierbar
 export class MdView extends Component {
@@ -60,6 +71,17 @@ export function editorEnv(app, getDocId) {
   };
 }
 
+// Zeilenweiser Vergleich zweier Stände (rot = nur im ersten, grün = nur im zweiten)
+export function DiffView({ from, to, fromLabel, toLabel }) {
+  const rows = diffHunks(lineDiff(from, to));
+  const changed = rows.some(r => r.t === '+' || r.t === '-');
+  return html`<div class="diff">
+    <div class="diff-legend"><span class="diff-key del">− ${fromLabel}</span><span class="diff-key add">+ ${toLabel}</span></div>
+    ${changed ? html`<div class="diff-body">${rows.map(r => html`<div class=${'diff-row ' + (r.t === '+' ? 'add' : r.t === '-' ? 'del' : r.t === '…' ? 'gap' : '')}><span class="diff-sign">${r.t === ' ' ? '' : r.t === '-' ? '−' : r.t}</span><span class="diff-text">${r.s || ' '}</span></div>`)}</div>`
+      : html`<div class="md-empty">Der Inhalt ist identisch (Unterschiede nur bei Titel, Tags oder Ordner).</div>`}
+  </div>`;
+}
+
 export class DocEditor extends Component {
   constructor(props) {
     super(props);
@@ -75,6 +97,11 @@ export class DocEditor extends Component {
         content: props.template ? applyPlaceholders(props.template.content) : '', titleHint: props.template ? props.template.title : '',
         status: 'saved', key: 1, raw: false, conflict: null,
       };
+    // Gibt es einen lokalen Entwurf, der vom gespeicherten Stand abweicht?
+    const dr = readDraft(d ? d.id : null);
+    if (dr && (dr.content !== this.state.content || (dr.title || '') !== this.state.title) && (dr.content.trim() || (dr.title || '').trim())) this.state.draft = dr;
+    else if (dr) clearDraft(d ? d.id : null);
+    this.retries = 0;
     this.env = editorEnv(props.app, () => this.state.id);
     this.titleRef = { current: null };
     this.edRef = { current: null };
@@ -85,11 +112,14 @@ export class DocEditor extends Component {
   }
   componentWillUnmount() {
     if (this.props.app.docEditor === this) this.props.app.docEditor = null;
-    clearTimeout(this.t);
+    clearTimeout(this.t); clearTimeout(this.dt);
     if (this.edRef.current) this.edRef.current.flush();
-    if (this.state.status === 'dirty') this.save();
+    // Nicht gespeicherter Stand bleibt als lokaler Entwurf erhalten (wird nach erfolgreichem Speichern gelöscht)
+    if (this.isPending()) writeDraft(this.state.id, this.state);
+    if (this.state.status === 'dirty' || this.state.status === 'error') this.save();
   }
-  isPending() { return this.state.status === 'dirty' || this.state.status === 'saving' || this.state.status === 'error'; }
+  // Auch ein offener Konflikt ist ein ungespeicherter Stand
+  isPending() { return ['dirty', 'saving', 'error', 'conflict'].includes(this.state.status); }
   async flushNow() {
     if (this.edRef.current) this.edRef.current.flush();
     clearTimeout(this.t);
@@ -101,6 +131,8 @@ export class DocEditor extends Component {
     this.setState({ ...patch, status: this.state.status === 'conflict' ? 'conflict' : 'dirty' });
     clearTimeout(this.t);
     this.t = setTimeout(() => this.save(), 900);
+    clearTimeout(this.dt);
+    this.dt = setTimeout(() => { if (this.isPending()) writeDraft(this.state.id, this.state); }, 1500);
   }
   async save(force) {
     const s = this.state;
@@ -123,37 +155,64 @@ export class DocEditor extends Component {
       app.upsertDoc(r.doc);
       if (moved) app.refresh();
       this.saving = false;
+      this.retries = 0;
       // Während des Speicherns weitergetippt? Dann bleibt der Stand „ungespeichert“.
       const changed = this.state.title !== s.title || this.state.content !== s.content || this.state.tags !== s.tags || this.state.folder !== s.folder || this.state.parent !== s.parent;
       this.setState({ id: r.doc.id, version: r.doc.version, status: changed ? 'dirty' : 'saved', conflict: null, folder: r.doc.folder, parent: r.doc.parent || '' });
+      if (!changed) { clearTimeout(this.dt); clearDraft(s.id); if (!s.id) clearDraft(r.doc.id); }
       if (changed || this.again) { this.again = false; clearTimeout(this.t); this.t = setTimeout(() => this.save(), 300); }
     } catch (e) {
       this.saving = false;
+      writeDraft(s.id, this.state);
       if (e.status === 409 && e.data && e.data.doc) { this.setState({ status: 'conflict', conflict: e.data.doc }); app.upsertDoc(e.data.doc); return; }
       this.setState({ status: 'error' });
-      app.fail(e);
+      if (!this.retries) app.fail(e);
+      // Vorübergehende Fehler (Server nicht erreichbar, überlastet): automatisch erneut versuchen
+      if (e.status === 0 || e.status >= 500 || e.status === 429) {
+        clearTimeout(this.t);
+        this.t = setTimeout(() => { if (this.state.status === 'error') this.save(); }, Math.min(60000, 3000 * 2 ** this.retries++));
+      }
     }
   }
   takeTheirs() {
     const o = this.state.conflict;
-    this.setState({ title: o.title, folder: o.folder, parent: o.parent || '', tags: o.tags.join(', '), content: o.content, version: o.version, status: 'saved', conflict: null, key: this.state.key + 1 });
+    if (!confirm('Deine nicht gespeicherten Änderungen an dieser Seite verwerfen und den Stand vom Server laden?')) return;
+    clearTimeout(this.dt); clearDraft(this.state.id);
+    this.setState({ title: o.title, folder: o.folder, parent: o.parent || '', tags: o.tags.join(', '), content: o.content, version: o.version, status: 'saved', conflict: null, compare: false, key: this.state.key + 1 });
   }
-  keepMine() { this.setState({ status: 'dirty', conflict: null }, () => this.save(true)); }
+  keepMine() { this.setState({ status: 'dirty', conflict: null, compare: false }, () => this.save(true)); }
+  restoreDraft() {
+    const dr = this.state.draft;
+    if (this.edRef.current) this.edRef.current.flush();
+    // Mit der Version des Entwurfs speichern: Wurde die Seite inzwischen geändert, meldet der Server einen Konflikt
+    this.setState({ draft: null, title: dr.title || '', tags: dr.tags ?? this.state.tags, content: dr.content, version: this.state.id ? (dr.version || this.state.version) : 0, status: 'dirty', key: this.state.key + 1 }, () => this.save());
+  }
+  dropDraft() { clearDraft(this.state.id); this.setState({ draft: null }); }
   toggleRaw() {
     if (this.edRef.current) this.edRef.current.flush();
     this.setState({ raw: !this.state.raw, key: this.state.key + 1 });
   }
   render({ app }, s) {
-    const statusLabel = { saved: s.id ? 'Gespeichert' : 'Entwurf', dirty: 'Ungespeichert …', saving: 'Speichert …', error: 'Nicht gespeichert', conflict: 'Konflikt' }[s.status];
+    const statusLabel = { saved: s.id ? 'Gespeichert' : 'Entwurf', dirty: 'Ungespeichert …', saving: 'Speichert …', error: 'Nicht gespeichert – neuer Versuch folgt', conflict: 'Konflikt – nicht gespeichert' }[s.status];
     const doc = s.id && app.doc(s.id);
     return html`
       <div class="doc-edit">
         ${s.conflict && html`
           <div class="banner warn"><span class="ms">warning</span>
             <div class="grow">„${s.conflict.title}“ wurde inzwischen von ${s.conflict.updatedBy || 'jemand anderem'} geändert (${fmtDate(s.conflict.updated)}).</div>
+            <button type="button" class="btn btn-ghost sm" onClick=${() => this.setState({ compare: !s.compare })}><span class="ms">difference</span>${s.compare ? 'Vergleich ausblenden' : 'Vergleichen'}</button>
             <button type="button" class="btn btn-ghost sm" onClick=${() => this.takeTheirs()}>Deren Version laden</button>
             <button type="button" class="btn btn-primary sm" onClick=${() => this.keepMine()}>Meine Version speichern</button>
-          </div>`}
+          </div>
+          ${s.compare && html`<${DiffView} from=${s.conflict.content} to=${s.content} fromLabel="Version auf dem Server" toLabel="Deine Version" />`}`}
+        ${s.draft && !s.conflict && html`
+          <div class="banner warn"><span class="ms">history</span>
+            <div class="grow">Für diese Seite gibt es einen nicht gespeicherten Entwurf vom ${fmtDate(s.draft.ts)} auf diesem Gerät.</div>
+            <button type="button" class="btn btn-ghost sm" onClick=${() => this.setState({ compare: !s.compare })}><span class="ms">difference</span>${s.compare ? 'Vergleich ausblenden' : 'Vergleichen'}</button>
+            <button type="button" class="btn btn-ghost sm" onClick=${() => this.dropDraft()}>Verwerfen</button>
+            <button type="button" class="btn btn-primary sm" onClick=${() => this.restoreDraft()}>Entwurf wiederherstellen</button>
+          </div>
+          ${s.compare && html`<${DiffView} from=${s.content} to=${s.draft.content} fromLabel="Gespeicherter Stand" toLabel="Entwurf" />`}`}
         <textarea ref=${this.titleRef} class="title-edit" rows="1" value=${s.title} placeholder=${s.titleHint || 'Neue Seite'} maxlength="200" aria-label="Titel"
           onInput=${e => { this.set({ title: e.target.value.replace(/\n/g, ' ') }); e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
           onKeyDown=${e => { if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); const first = document.querySelector('.ed-root .ed-text'); if (first) first.focus(); } }}></textarea>

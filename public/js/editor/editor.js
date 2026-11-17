@@ -1,7 +1,7 @@
 // Block-Editor (Notion-ähnlich): jeder Absatz ist ein Block, „/“ öffnet das Einfügemenü.
 // Gespeichert wird weiterhin Markdown (siehe md.js) – so bleiben Suche, Export und MCP unverändert nutzbar.
 import { html, Component } from '/vendor/preact-htm.js';
-import { parse, serialize, bid, CALLOUTS, STATUS_COLORS, parseStatus, fmtDay, esc, ASSET_ICONS } from '../md.js';
+import { parse, serialize, bid, CALLOUTS, STATUS_COLORS, parseStatus, fmtDay, esc, ASSET_ICONS, listNumbers } from '../md.js';
 import { domToMd, toEditHtml, setCaret, caretOffset, caretAtStart, caretAtEnd, caretOnFirstLine, caretOnLastLine, caretClientRect, splitAtCaret, textLen } from './dom.js';
 import { GROUPS, filterItems } from './slash.js';
 import { EMOJI_GROUPS, searchEmoji } from './emoji.js';
@@ -11,6 +11,10 @@ import { CodeW, MathW, MermaidW, TableW, MediaW, EmbedW, DiagramW, DiagramModal,
 const TEXT_TYPES = ['p', 'h', 'quote', 'callout', 'bullet', 'number', 'todo', 'footnote', 'toggle'];
 const isText = b => TEXT_TYPES.includes(b.type);
 const LISTY = ['bullet', 'number', 'todo'];
+const MAX_INDENT = 8;
+const BULLETS = ['•', '◦', '▪'];
+// Eigenschaften, die nur zu bestimmten Blockarten gehören
+const toPlain = b => { b.type = 'p'; delete b.done; delete b.kind; delete b.level; delete b.ref; delete b.indent; delete b.title; delete b.start; };
 const TURN_INTO = [
   ['p', 'Text', 'text_fields'], ['h1', 'Überschrift 1', 'format_h1'], ['h2', 'Überschrift 2', 'format_h2'], ['h3', 'Überschrift 3', 'format_h3'],
   ['bullet', 'Aufzählung', 'format_list_bulleted'], ['number', 'Nummerierte Liste', 'format_list_numbered'], ['todo', 'To-do-Liste', 'check_box'],
@@ -119,6 +123,8 @@ function BlockRow({ b, ed, num }) {
     </div>`;
 }
 
+const liPad = b => (b.indent ? { paddingLeft: (b.indent * 24) + 'px' } : null);
+
 function blockBody(b, ed, num) {
   const mut = (fn, kind) => ed.mutate(fn, kind);
   switch (b.type) {
@@ -129,11 +135,15 @@ function blockBody(b, ed, num) {
       const c = CALLOUTS[b.kind] || CALLOUTS.note;
       return html`<div class=${'md-callout k-' + (b.kind in CALLOUTS ? b.kind : 'note')}>
         <button type="button" class="ms ed-callout-i" title="Art ändern" contenteditable="false" onClick=${e => ed.openMenu(b, e, 'callout')}>${c.icon}</button>
-        <div class="grow"><${TextBlock} b=${b} ed=${ed} cls="ed-callout-t" ph=${c.label + ' …'} /></div></div>`;
+        <div class="grow">
+          <input class="md-callout-t ed-callout-title" value=${b.title || ''} placeholder=${c.label} maxlength="120" aria-label="Titel des Hinweisblocks" readonly=${ed.readOnly}
+            onInput=${e => mut(() => { const v = e.target.value; if (v.trim()) b.title = v; else delete b.title; }, 'typing')}
+            onKeyDown=${e => { if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); ed.focus(b.id, 'start'); } }} />
+          <${TextBlock} b=${b} ed=${ed} cls="ed-callout-t" ph=${c.label + ' …'} /></div></div>`;
     }
-    case 'bullet': return html`<div class="ed-li"><span class="ed-marker" contenteditable="false">•</span><${TextBlock} b=${b} ed=${ed} cls="ed-li-t" /></div>`;
-    case 'number': return html`<div class="ed-li"><span class="ed-marker num" contenteditable="false">${num}.</span><${TextBlock} b=${b} ed=${ed} cls="ed-li-t" /></div>`;
-    case 'todo': return html`<div class=${'ed-li todo' + (b.done ? ' done' : '')}>
+    case 'bullet': return html`<div class="ed-li" style=${liPad(b)}><span class="ed-marker" contenteditable="false">${BULLETS[(b.indent || 0) % 3]}</span><${TextBlock} b=${b} ed=${ed} cls="ed-li-t" /></div>`;
+    case 'number': return html`<div class="ed-li" style=${liPad(b)}><span class="ed-marker num" contenteditable="false">${num}.</span><${TextBlock} b=${b} ed=${ed} cls="ed-li-t" /></div>`;
+    case 'todo': return html`<div class=${'ed-li todo' + (b.done ? ' done' : '')} style=${liPad(b)}>
       <button type="button" class=${'ms md-check ed-check' + (b.done ? ' fill' : '')} contenteditable="false" aria-pressed=${!!b.done} onMouseDown=${e => e.preventDefault()} onClick=${() => mut(() => { b.done = !b.done; })}>${b.done ? 'check_box' : 'check_box_outline_blank'}</button>
       <${TextBlock} b=${b} ed=${ed} cls="ed-li-t" /></div>`;
     case 'footnote': return html`<div class="ed-li fn"><span class="ed-marker fn" contenteditable="false">[${b.ref}]</span><${TextBlock} b=${b} ed=${ed} cls="ed-li-t" /></div>`;
@@ -165,11 +175,8 @@ function blockBody(b, ed, num) {
 }
 
 function BlockList({ list, ed }) {
-  let n = 0;
-  return html`<div class="ed-list">${list.map((b, i) => {
-    if (b.type === 'number') n = i > 0 && list[i - 1].type === 'number' ? n + 1 : (b.start > 0 ? b.start : 1);
-    return html`<${BlockRow} key=${b.id} b=${b} ed=${ed} num=${n} />`;
-  })}</div>`;
+  const nums = listNumbers(list);
+  return html`<div class="ed-list">${list.map((b, i) => html`<${BlockRow} key=${b.id} b=${b} ed=${ed} num=${nums[i]} />`)}</div>`;
 }
 
 // ---------- Popover ----------
@@ -334,7 +341,14 @@ export class BlockEditor extends Component {
   }
   normalize() {
     this.ensureTrailing(this.doc);
-    const walk = list => list.forEach(b => {
+    const walk = list => list.forEach((b, i) => {
+      // Einrückung nur bei Listen und höchstens eine Ebene tiefer als der Punkt davor
+      if (!LISTY.includes(b.type)) delete b.indent;
+      else {
+        const prev = i > 0 && LISTY.includes(list[i - 1].type) ? list[i - 1] : null;
+        const lv = Math.max(0, Math.min(b.indent || 0, prev ? (prev.indent || 0) + 1 : 0, MAX_INDENT));
+        if (lv) b.indent = lv; else delete b.indent;
+      }
       if (b.type === 'toggle') { if (!b.children || !b.children.length) b.children = [newText()]; walk(b.children); }
       if (b.type === 'columns') { b.cols = (b.cols || []).map(c => (c.length ? c : [newText()])); b.cols.forEach(walk); }
     });
@@ -378,6 +392,10 @@ export class BlockEditor extends Component {
     if (b.type === 'p' && /^(---|\\\*\\\*\\\*|___)$/.test(b.text || '')) {
       this.mutate(() => { const { arr, idx } = locate(this.root(b), b.id); arr.splice(idx, 1, { id: bid(), type: 'hr' }, newText()); this.focusLater(arr[idx + 1].id, 0); });
     }
+  }
+  blockById(id) {
+    for (const list of [this.doc, ...Object.values(this.synced).map(s => s.tree)]) { const r = locate(list, id); if (r) return r.b; }
+    return null;
   }
   root(b) { // Liste, in der der Block liegt (Dokument oder synchronisierter Block)
     if (locate(this.doc, b.id)) return this.doc;
@@ -473,15 +491,37 @@ export class BlockEditor extends Component {
       if (k === 's') { e.preventDefault(); this.flush(); if (this.props.onSave) this.props.onSave(); return; }
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.enter(b, el, tb); return; }
-    if (e.key === 'Enter' && e.shiftKey && b.type !== 'h') { e.preventDefault(); document.execCommand('insertLineBreak'); return; }
+    // Zeilenumbruch im Block – nicht in einzeiligen Blöcken (Überschrift, Fußnote, Titel des Umschaltblocks)
+    if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); if (!['h', 'footnote', 'toggle'].includes(b.type)) document.execCommand('insertLineBreak'); return; }
     if (e.key === 'Backspace' && caretAtStart(el)) { if (this.backspace(b, el, tb)) e.preventDefault(); return; }
     if (e.key === 'Delete' && caretAtEnd(el)) { if (this.deleteForward(b, el, tb)) e.preventDefault(); return; }
     if (e.key === 'ArrowUp' && !e.shiftKey && caretOnFirstLine(el)) { const id = this.neighbor(b, -1); if (id) { e.preventDefault(); this.focus(id, 'end'); } return; }
     if (e.key === 'ArrowDown' && !e.shiftKey && caretOnLastLine(el)) { const id = this.neighbor(b, 1); if (id) { e.preventDefault(); this.focus(id, 'start'); } return; }
     if (e.key === 'ArrowLeft' && caretAtStart(el)) { const id = this.neighbor(b, -1); if (id) { e.preventDefault(); this.focus(id, 'end'); } return; }
     if (e.key === 'ArrowRight' && caretAtEnd(el)) { const id = this.neighbor(b, 1); if (id) { e.preventDefault(); this.focus(id, 'start'); } return; }
-    if (e.key === 'Tab') { e.preventDefault(); const id = this.neighbor(b, e.shiftKey ? -1 : 1); if (id) this.focus(id, 'end'); }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      // In Listen: ein-/ausrücken. Sonst zum nächsten/vorherigen Block.
+      if (LISTY.includes(b.type)) { this.indent(b, el, tb, e.shiftKey ? -1 : 1); return; }
+      const id = this.neighbor(b, e.shiftKey ? -1 : 1); if (id) this.focus(id, 'end');
+    }
     if (e.key === 'Escape') el.blur();
+  }
+  // Listenpunkt (samt seiner Unterpunkte) eine Ebene ein- oder ausrücken
+  indent(b, el, tb, dir) {
+    tb.read();
+    const loc = locate(this.root(b), b.id);
+    if (!loc) return;
+    const cur = b.indent || 0;
+    const prev = loc.idx > 0 && LISTY.includes(loc.arr[loc.idx - 1].type) ? loc.arr[loc.idx - 1] : null;
+    const next = dir > 0 ? Math.min(cur + 1, prev ? (prev.indent || 0) + 1 : 0, MAX_INDENT) : Math.max(0, cur - 1);
+    if (next === cur) return;
+    const off = caretOffset(el);
+    this.mutate(() => {
+      for (let k = loc.idx + 1; k < loc.arr.length && LISTY.includes(loc.arr[k].type) && (loc.arr[k].indent || 0) > cur; k++) loc.arr[k].indent = (loc.arr[k].indent || 0) + (next - cur);
+      b.indent = next;
+    });
+    this.focusLater(b.id, off);
   }
   enter(b, el, tb) {
     tb.read();
@@ -491,7 +531,9 @@ export class BlockEditor extends Component {
     const empty = !b.text;
     // Leerer Listenpunkt/Zitat/Hinweis + Enter → normaler Absatz
     if (empty && ['bullet', 'number', 'todo', 'quote', 'callout', 'footnote'].includes(b.type)) {
-      this.mutate(() => { b.type = 'p'; delete b.done; delete b.kind; });
+      // Eingerückter leerer Listenpunkt: erst eine Ebene zurück
+      if (LISTY.includes(b.type) && b.indent) { this.indent(b, el, tb, -1); return; }
+      this.mutate(() => toPlain(b));
       this.focusLater(b.id, 0);
       return;
     }
@@ -518,8 +560,14 @@ export class BlockEditor extends Component {
       const type = LISTY.includes(b.type) ? b.type : 'p';
       n = newText(type, { text: tail });
       if (type === 'todo') n.done = false;
-      // Enter am Anfang eines nicht leeren Blocks: neuer Block davor
-      if (!b.text && tail && b.type !== 'p') { n.type = b.type; }
+      if (LISTY.includes(type) && b.indent) n.indent = b.indent;
+      // Enter am Anfang eines nicht leeren Blocks: Der Block wandert mit all seinen Eigenschaften
+      // (Überschrift-Stufe, Art des Hinweises, Fußnoten-Nr.) nach unten, davor bleibt eine leere Zeile.
+      if (!b.text && tail && !LISTY.includes(b.type) && b.type !== 'p') {
+        const { id, text, ...props } = b;
+        Object.assign(n, props);
+        toPlain(b);
+      }
       loc.arr.splice(loc.idx + 1, 0, n);
     }
     this.normalize();
@@ -533,14 +581,15 @@ export class BlockEditor extends Component {
     const loc = locate(root, b.id);
     if (!loc) return false;
     if (b.type !== 'p' && b.type !== 'toggle') {
-      this.mutate(() => { b.type = 'p'; delete b.done; delete b.kind; delete b.level; delete b.ref; });
+      if (LISTY.includes(b.type) && b.indent) { this.indent(b, el, tb, -1); return true; }
+      this.mutate(() => toPlain(b));
       this.focusLater(b.id, 0);
       return true;
     }
     if (b.type === 'toggle') {
       if (b.text) return false;
-      this.mutate(() => { loc.arr.splice(loc.idx, 1, ...(b.children || []).filter(c => !(c.type === 'p' && !c.text))); });
       const prev = this.neighbor(b, -1);
+      this.mutate(() => { loc.arr.splice(loc.idx, 1, ...(b.children || []).filter(c => !(c.type === 'p' && !c.text))); });
       if (prev) this.focusLater(prev, 'end');
       return true;
     }
@@ -558,9 +607,9 @@ export class BlockEditor extends Component {
     if (prev && !isText(prev)) {
       // Vorheriger Block ist ein Widget: leeren Absatz entfernen, sonst nichts tun
       if (!b.text) {
-        this.mutate(() => loc.arr.splice(loc.idx, 1));
         const id = this.neighbor(b, -1);
-        if (id) this.focusLater(id, 'end');
+        this.mutate(() => loc.arr.splice(loc.idx, 1));
+        if (id) this.focusLater(id, 'end'); else this.focus(prev.id);
         return true;
       }
       return true;
@@ -664,13 +713,17 @@ export class BlockEditor extends Component {
       after = nb;
       try {
         const f = await this.env.upload(file);
-        this.mutate(() => {
-          nb.src = f.url; delete nb._uploading;
-          if (type === 'image') { nb.alt = f.name.replace(/\.[a-z0-9]+$/i, ''); delete nb.name; } else nb.size = f.size;
+        // Nach „Rückgängig“ ist nb nicht mehr das Objekt im Dokument → über die ID suchen
+        const cur = this.blockById(nb.id);
+        if (cur) this.mutate(() => {
+          cur.src = f.url; delete cur._uploading;
+          if (type === 'image') { cur.alt = f.name.replace(/\.[a-z0-9]+$/i, ''); delete cur.name; } else cur.size = f.size;
         });
+        if (cur) after = cur;
       } catch (err) {
         this.env.flash(err.message || 'Upload fehlgeschlagen', true);
-        const loc = locate(this.root(nb), nb.id);
+        const cur = this.blockById(nb.id);
+        const loc = cur && locate(this.root(cur), cur.id);
         if (loc) this.mutate(() => loc.arr.splice(loc.idx, 1));
       }
     }

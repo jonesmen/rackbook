@@ -103,9 +103,9 @@ export function TableW({ b, ed }) {
   const w = rows[0].length;
   const set = (r, c, v) => ed.mutate(() => { rows[r][c] = v; }, 'typing');
   const addRow = at => ed.mutate(() => { rows.splice(at, 0, Array(w).fill('')); });
-  const addCol = at => ed.mutate(() => { rows.forEach(r => r.splice(at, 0, '')); });
+  const addCol = at => ed.mutate(() => { rows.forEach(r => r.splice(at, 0, '')); if (b.align) b.align.splice(at, 0, ''); });
   const delRow = r => ed.mutate(() => { if (rows.length > 1) rows.splice(r, 1); });
-  const delCol = c => ed.mutate(() => { if (w > 1) rows.forEach(r => r.splice(c, 1)); });
+  const delCol = c => ed.mutate(() => { if (w > 1) { rows.forEach(r => r.splice(c, 1)); if (b.align) b.align.splice(c, 1); } });
   return html`
     <div class="w-table">
       <div class="md-table-wrap">
@@ -287,15 +287,19 @@ export class DiagramModal extends Component {
         this.post({ action: 'export', format: 'xmlsvg', spinKey: 'saving' });
       } else if (m.event === 'export' && m.data) {
         const svg = m.data.startsWith('data:') ? decodeDataUrl(m.data) : m.data;
-        await this.saveSvg(svg, 'diagramm.drawio.svg');
-        if (this.exitAfter) this.props.onClose(); else this.post({ action: 'status', message: 'Gespeichert', modified: false });
+        // Nur nach erfolgreichem Speichern schließen – sonst wäre die Zeichnung verloren
+        const ok = await this.saveSvg(svg, 'diagramm.drawio.svg');
+        if (ok && this.exitAfter) this.props.onClose();
+        else this.post({ action: 'status', message: ok ? 'Gespeichert' : 'Speichern fehlgeschlagen', modified: !ok });
       } else if (m.event === 'exit') this.props.onClose();
     } else {
       const m = e.data || {};
       if (m.type === 'ready') this.post({ type: 'load', svg: await this.currentSvg() });
       else if (m.type === 'save' && typeof m.svg === 'string') {
-        await this.saveSvg(m.svg, 'zeichnung.excalidraw.svg');
-        if (m.exit) this.props.onClose(); else this.post({ type: 'saved' });
+        const ok = await this.saveSvg(m.svg, 'zeichnung.excalidraw.svg');
+        if (!ok) this.post({ type: 'error' });
+        else if (m.exit) this.props.onClose();
+        else this.post({ type: 'saved' });
       } else if (m.type === 'exit') this.props.onClose();
     }
   };
@@ -304,11 +308,19 @@ export class DiagramModal extends Component {
     this.setState({ busy: true, err: '' });
     try {
       const f = await ed.env.upload(new File([svg], name, { type: 'image/svg+xml' }));
-      ed.mutate(() => { b.src = f.url; });
+      // Block über die ID suchen: nach „Rückgängig“ ist das ursprüngliche Objekt nicht mehr Teil des Dokuments
+      ed.mutate(() => { (ed.blockById(b.id) || b).src = f.url; });
       this.setState({ busy: false });
-    } catch (err) { this.setState({ busy: false, err: err.message || 'Speichern fehlgeschlagen' }); }
+      return true;
+    } catch (err) {
+      this.setState({ busy: false, err: 'Speichern fehlgeschlagen: ' + (err.message || 'Server nicht erreichbar') + ' – der Editor bleibt geöffnet, bitte erneut speichern.' });
+      return false;
+    }
   }
-  render({ b, drawioUrl, onClose }, { busy, err }) {
+  close = () => {
+    if (this.props.b.type !== 'drawio' || confirm('Editor schließen? Nicht gespeicherte Änderungen an der Zeichnung gehen verloren.')) this.props.onClose();
+  };
+  render({ b, drawioUrl }, { busy, err }) {
     const src = b.type === 'drawio'
       ? `${drawioUrl}/?embed=1&proto=json&spin=1&ui=atlas&libraries=1&saveAndExit=1&noExitBtn=0&lang=de`
       : '/excalidraw.html';
@@ -317,9 +329,9 @@ export class DiagramModal extends Component {
         ${(b.type === 'drawio' || busy || err) && html`<div class="diagram-bar">
           <span class="ms">${b.type === 'drawio' ? 'schema' : 'draw'}</span>
           <b>${b.type === 'drawio' ? 'Draw.io' : 'Excalidraw'}</b>
-          <span class="muted">${busy ? 'Speichert …' : err || (b.type === 'drawio' ? 'Mit „Speichern“ bzw. „Speichern & Beenden“ übernehmen.' : 'Mit „Speichern“ übernehmen.')}</span>
+          <span class=${err && !busy ? 'diagram-err' : 'muted'}>${busy ? 'Speichert …' : err || (b.type === 'drawio' ? 'Mit „Speichern“ bzw. „Speichern & Beenden“ übernehmen.' : 'Mit „Speichern“ übernehmen.')}</span>
           <span class="grow"></span>
-          <button type="button" class="btn btn-ghost sm" onClick=${onClose}>Schließen</button>
+          <button type="button" class="btn btn-ghost sm" onClick=${this.close}>Schließen</button>
         </div>`}
         <iframe ref=${this.ref} class="diagram-frame" src=${src} title="Diagramm-Editor"></iframe>
       </div>`;

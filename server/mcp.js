@@ -244,8 +244,8 @@ Der Inhalt ist Markdown; im Web-Editor erscheint jeder Absatz als Block. Verwend
 - Überschriften \`##\` bis \`####\` (\`#\` nur in Ausnahmefällen – der Titel ist separat). \`##\`/\`###\` bilden das Inhaltsverzeichnis.
 - **fett**, *kursiv*, ~~durchgestrichen~~, \`Inline-Code\` für IPs, Hostnamen, Pfade, Ports. Harter Zeilenumbruch: \`\\\` am Zeilenende.
 - Code-Blöcke mit Sprache: \`\`\`bash, \`\`\`yaml, \`\`\`ini …
-- Listen (\`-\`, \`1.\`), Tabellen (\`| a | b |\` mit Trennzeile \`|---|---|\`)
-- Zitat: Zeile mit \`>\`. **Hinweisblock:** erste Zeile \`> [!NOTE]\` (auch \`[!TIP]\`, \`[!IMPORTANT]\`, \`[!WARNING]\`, \`[!CAUTION]\`), danach \`> Text\`
+- Listen (\`-\`, \`1.\`), Unterpunkte mit 4 Leerzeichen eingerückt (auch gemischt und bei Aufgaben). Tabellen (\`| a | b |\` mit Trennzeile \`|---|---|\`, Ausrichtung per \`:--\`, \`:-:\`, \`--:\`)
+- Zitat: Zeile mit \`>\`. **Hinweisblock:** erste Zeile \`> [!NOTE]\` (auch \`[!TIP]\`, \`[!IMPORTANT]\`, \`[!WARNING]\`, \`[!CAUTION]\`), danach \`> Text\`. Eigener Titel: \`> [!WARNING] Titel\`. Absätze im Zitat mit einer Zeile \`>\` trennen.
 - Aufgaben: \`- [ ] offen\` / \`- [x] erledigt\` – offene Aufgaben erscheinen auf dem Dashboard
 - Links: \`[Text](https://…)\`, Verweis auf andere Dokumente: \`[Titel](/doc/<id>)\` – Unterseiten werden unter der Elternseite automatisch aufgelistet
 - Aufklappbar: \`:::toggle Titel\` … \`:::\` · Spalten: \`:::columns\` mit 2–5 Blöcken \`:::column\` … \`:::\`, abgeschlossen mit \`:::\`
