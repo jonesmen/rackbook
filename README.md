@@ -75,6 +75,7 @@ Alle Einstellungen stehen kommentiert in [`.env`](.env). Die wichtigsten:
 | `RACKBOOK_PORT` / `RACKBOOK_BIND` | `3000` / `0.0.0.0` | Port und Bind-Adresse auf dem Host |
 | `PUBLIC_URL` | leer | Öffentliche URL, z. B. `https://docs.example.de` (strikte Origin-Prüfung) |
 | `TRUST_PROXY` | `false` | Anzahl Reverse Proxys davor (z. B. `1`) |
+| `SETUP_TOKEN` | – | Optional: Die Ersteinrichtung (erster Administrator) verlangt dieses Token. Sinnvoll, wenn die Instanz schon vor der Einrichtung aus dem Netz erreichbar ist |
 | `COOKIE_SECURE` | `auto` | Secure-Cookie bei HTTPS |
 | `APP_SECRET` | leer | Schlüssel für 2FA-Verschlüsselung; leer = automatisch im Volume erzeugt |
 | `SESSION_IDLE_MINUTES` / `SESSION_MAX_DAYS` | `720` / `14` | Sitzungsdauer |

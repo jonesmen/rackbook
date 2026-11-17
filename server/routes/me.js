@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import { db } from '../db.js';
 import { config } from '../config.js';
 import {
-  HttpError, hashPassword, verifyPassword, validatePassword, encrypt, decrypt, newTotpSecret, verifyTotp,
+  HttpError, RateLimiter, hashPassword, verifyPassword, validatePassword, encrypt, decrypt, newTotpSecret, verifyTotp,
 } from '../security.js';
 import { audit, publicUser, revokeUserSessions } from '../auth.js';
 import { cleanName } from './auth.js';
@@ -48,9 +48,15 @@ r.patch('/', (req, res) => {
   res.json({ user: publicUser(load(u.id)) });
 });
 
+// Fehlversuche bei der Passwort-/Code-Abfrage in einer laufenden Sitzung begrenzen
+const reauth = new RateLimiter(5, 15 * 60000);
+const reauthFail = (u, msg, status = 403) => {
+  if (!reauth.hit('u' + u.id)) throw new HttpError(429, 'Zu viele Fehlversuche. Bitte in einigen Minuten erneut versuchen.');
+  return new HttpError(status, msg);
+};
 async function requirePassword(u, pw) {
-  if (typeof pw !== 'string' || !(await verifyPassword(pw, u.password_hash))) {
-    throw new HttpError(403, 'Das aktuelle Passwort ist falsch.');
+  if (typeof pw !== 'string' || pw.length > 256 || !(await verifyPassword(pw, u.password_hash))) {
+    throw reauthFail(u, 'Das aktuelle Passwort ist falsch.');
   }
 }
 
@@ -121,7 +127,8 @@ r.post('/totp/disable', async (req, res) => {
   const u = load(req.user.id);
   if (!u.totp_enabled) throw new HttpError(400, '2FA ist nicht aktiv.');
   await requirePassword(u, req.body?.password);
-  if (verifyTotp(decrypt(u.totp_secret), req.body?.code, u.totp_last_step) === null) throw new HttpError(400, 'Der Code ist ungültig.');
+  if (verifyTotp(decrypt(u.totp_secret), req.body?.code, u.totp_last_step) === null) throw reauthFail(u, 'Der Code ist ungültig.', 400);
+  reauth.reset('u' + u.id);
   db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_last_step = 0, updated_at = ? WHERE id = ?').run(Date.now(), u.id);
   audit(req, 'user.2fa_disabled', u.username);
   res.json({ user: publicUser(load(u.id)) });

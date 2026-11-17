@@ -206,8 +206,17 @@ export function resolveUser({ claims, issuer }) {
       const wanted = String(claimValue(claims, s.usernameClaim) || claims.preferred_username || claims.email || '').split('@')[0];
       const base = wanted.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 28) || 'sso';
       const existing = wanted && db.prepare('SELECT * FROM users WHERE username = ?').get(base);
-      if (existing && s.linkExisting) {
+      // Verknüpfen nur über einen echten Benutzernamen vom Identity Provider – nicht über den Namensteil einer
+      // (unbestätigten) E-Mail-Adresse. Admin-Konten nur, wenn der IdP die Person ebenfalls als Admin ausweist.
+      const fromName = !!(claimValue(claims, s.usernameClaim) || claims.preferred_username);
+      const mailOk = fromName || claims.email_verified === true;
+      if (existing && s.linkExisting && existing.role === 'admin' && s.adminGroups.length && role !== 'admin') {
+        throw new HttpError(403, 'Dieses SSO-Konto darf nicht mit einem Administrator-Konto verknüpft werden (keine Admin-Gruppe).');
+      }
+      if (existing && s.linkExisting && mailOk) {
         user = existing;
+      } else if (existing && s.linkExisting) {
+        throw new HttpError(403, 'Das SSO-Konto konnte nicht zugeordnet werden: Die E-Mail-Adresse ist beim Identity Provider nicht bestätigt.');
       } else {
         if (!s.autoCreate) throw new HttpError(403, 'Für dieses SSO-Konto gibt es keinen Rackbook-Benutzer. Bitte einen Administrator kontaktieren.');
         let username = base.length >= 3 ? base : (base + '-sso');

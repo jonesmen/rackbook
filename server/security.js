@@ -144,9 +144,15 @@ export class RateLimiter {
   hit(key) {
     const now = Date.now();
     const arr = (this.hits.get(key) || []).filter(t => now - t < this.windowMs);
-    arr.push(now);
+    // Über dem Limit nicht weiter anwachsen lassen (Speicher/Zeit bei Dauerbeschuss)
+    if (arr.length <= this.limit) arr.push(now);
     this.hits.set(key, arr);
     return arr.length <= this.limit;
+  }
+  // Letzten Treffer zurücknehmen (z. B. erfolgreiche Anmeldung zählt nicht als Versuch)
+  forgive(key) {
+    const arr = this.hits.get(key);
+    if (arr && arr.length) { arr.pop(); if (!arr.length) this.hits.delete(key); }
   }
   retryAfter(key) {
     const arr = this.hits.get(key) || [];

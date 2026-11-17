@@ -50,6 +50,16 @@ export function createApp() {
   app.set('etag', 'strong');
 
   app.use(securityHeaders);
+  // Hinweis, wenn offensichtlich ein Reverse Proxy davor steht, TRUST_PROXY aber nicht gesetzt ist:
+  // Dann teilen sich alle Besucher eine IP (Anmelde-Limit, Protokoll).
+  let proxyWarned = false;
+  app.use((req, res, next) => {
+    if (!proxyWarned && config.trustProxy === false && req.headers['x-forwarded-for']) {
+      proxyWarned = true;
+      console.warn('Hinweis: Anfragen kommen über einen Reverse Proxy (X-Forwarded-For), aber TRUST_PROXY ist nicht gesetzt. Für korrekte IP-Adressen z. B. TRUST_PROXY=1 setzen.');
+    }
+    next();
+  });
   app.get('/healthz', (req, res) => { db.prepare('SELECT 1').get(); res.json({ status: 'ok' }); });
 
   // MCP-Server für KI-Assistenten (Bearer-Token, keine Cookies → eigener Pfad ohne CSRF/Session)
@@ -58,6 +68,12 @@ export function createApp() {
   const mcpLarge = express.json({ limit: '30mb' });
   app.all('/mcp', (req, res, next) => (hasValidToken(req) ? mcpLarge : mcpSmall)(req, res, next), (req, res, next) => {
     Promise.resolve(mcpHandler(req, res)).catch(next);
+  // eslint-disable-next-line no-unused-vars
+  }, (err, req, res, next) => {
+    // Fehler im JSON-RPC-Format melden
+    if (err.type === 'entity.parse.failed') return res.status(400).json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Ungültiges JSON' } });
+    if (err.type === 'entity.too.large') return res.status(413).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Anfrage zu groß' } });
+    next(err);
   });
 
   const api = express.Router();
@@ -66,7 +82,12 @@ export function createApp() {
   // Vollständige Backups (inkl. Dateien) können groß sein – das höhere Limit gilt nur für angemeldete Admins.
   const jsonStd = express.json({ limit: Math.max(2, Math.ceil((config.maxDocBytes * 25) / 1048576)) + 'mb' });
   const jsonBig = express.json({ limit: '2gb' });
-  api.use((req, res, next) => (req.path === '/admin/restore' && req.user?.role === 'admin' ? jsonBig : jsonStd)(req, res, next));
+  // Anmeldung und öffentliche Freigaben sind ohne Sitzung erreichbar → dort nur kleine Anfragen einlesen
+  const jsonSmall = express.json({ limit: '64kb' });
+  api.use((req, res, next) => {
+    if (req.path.startsWith('/auth/') || req.path.startsWith('/public/')) return jsonSmall(req, res, next);
+    (req.path === '/admin/restore' && req.user?.role === 'admin' ? jsonBig : jsonStd)(req, res, next);
+  });
   api.use(csrfProtection);
   api.use('/auth', authRoutes);
   api.use('/public', publicRoutes);

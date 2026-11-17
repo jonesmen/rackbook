@@ -127,7 +127,8 @@ function authenticate(req) {
   const row = db.prepare(`SELECT t.*, u.id AS uid FROM mcp_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`).get(sha256(m[1]));
   if (!row || row.revoked_at || (row.expires_at && row.expires_at < Date.now())) return null;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(row.uid);
-  if (!user || user.status !== 'active') return null;
+  // Kein Zugriff, solange ein Passwortwechsel aussteht (Konto wurde zurückgesetzt)
+  if (!user || user.status !== 'active' || user.must_change_password) return null;
   const now = Date.now();
   if (!row.last_used_at || now - row.last_used_at > 60000) {
     db.prepare('UPDATE mcp_tokens SET last_used_at = ?, last_used_ip = ? WHERE id = ?').run(now, clientIp(req), row.id);
@@ -149,6 +150,15 @@ function authenticate(req) {
 
 // ---------- Hilfen ----------
 class ToolError extends Error {}
+const clampInt = (v, def, min, max) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def; };
+// Tags als Liste (auch wenn die KI eine kommagetrennte Zeichenkette schickt)
+const tagList = v => (Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(',').map(x => x.trim()).filter(Boolean) : []);
+// Eine führende „# Überschrift“ nur entfernen, wenn sie den Titel wiederholt
+const dropTitleHeading = (content, title) => {
+  const c = String(content || '');
+  const m = c.match(/^\s*#\s+(.*)\n+/);
+  return m && m[1].trim().toLowerCase() === String(title || '').trim().toLowerCase() ? c.slice(m[0].length) : c;
+};
 const need = (ctx, scope) => {
   if (!ctx.scopes.has(scope)) throw new ToolError(`Keine Berechtigung: Dieses Token hat das Recht „${scope}“ nicht.`);
 };
@@ -197,9 +207,11 @@ function checkFolder(ctx, folder) {
   if (!folderOk(ctx, folder)) throw new ToolError(`Ordner „${folder}“ ist für dieses Token nicht freigegeben.`);
 }
 function updateDoc(ctx, d, next) {
-  saveRevision(d, ctx.user.id);
   const folder = next.folder ?? d.folder_id;
   const parent = next.parent !== undefined ? next.parent : (d.parent_id ?? null);
+  // Ohne tatsächliche Änderung keine neue Version anlegen
+  if ((next.title ?? d.title) === d.title && folder === d.folder_id && (parent ?? null) === (d.parent_id ?? null) && (next.tags ?? d.tags) === d.tags && (next.content ?? d.content) === d.content) return d;
+  saveRevision(d, ctx.user.id);
   db.prepare(`UPDATE documents SET title = ?, folder_id = ?, parent_id = ?, tags = ?, content = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'mcp'
               WHERE id = ?`).run(next.title ?? d.title, folder, parent, next.tags ?? d.tags, next.content ?? d.content, Date.now(), ctx.user.id, d.id);
   if (folder !== d.folder_id) moveDocSubtree(d.id, folder);
@@ -220,7 +232,7 @@ const logWrite = (ctx, req, action, target, details) => {
 export function guide(ctx) {
   const s = ctx.settings;
   const folders = folderTree(ctx);
-  const perms = [...ctx.scopes].map(x => ({ read: 'lesen & suchen', write: 'Dokumente anlegen & bearbeiten', delete: 'Dokumente in den Papierkorb verschieben', folders: 'Ordner anlegen' }[x])).join(', ');
+  const perms = [...ctx.scopes].map(x => ({ read: 'lesen & suchen', write: 'Dokumente anlegen & bearbeiten', delete: 'Dokumente in den Papierkorb verschieben', folders: 'Ordner anlegen', files: 'Dateien hochladen & lesen' }[x])).filter(Boolean).join(', ');
   return `# Rackbook – Anleitung für KI-Assistenten
 
 Rackbook ist die Markdown-Dokumentation einer IT-/Homelab-Umgebung (Server, Netzwerk, Dienste, Backups, Runbooks).
@@ -295,19 +307,24 @@ const TOOLS = [
     run(ctx, a) {
       const q = String(a.query || '').trim().toLowerCase();
       if (!q) throw new ToolError('Bitte einen Suchbegriff angeben.');
+      // Mehrere Wörter: alle müssen vorkommen (in Titel, Tags oder Inhalt), die Reihenfolge ist egal
+      const words = [...new Set(q.split(/\s+/).filter(Boolean))].slice(0, 12);
+      const inFolder = a.folder ? folderDescendants(String(a.folder)) : null;
       const hits = [];
       for (const d of accessibleDocs(ctx)) {
-        if (a.folder && !folderDescendants(a.folder).has(d.folder_id)) continue;
+        if (inFolder && !inFolder.has(d.folder_id)) continue;
         const tags = JSON.parse(d.tags);
         if (a.tag && !tags.includes(String(a.tag).toLowerCase())) continue;
-        const inTitle = d.title.toLowerCase().includes(q), inTag = tags.some(t => t.includes(q));
-        const idx = d.content.toLowerCase().indexOf(q);
-        if (!inTitle && !inTag && idx < 0) continue;
-        const snippet = idx >= 0 ? d.content.slice(Math.max(0, idx - 80), idx + q.length + 120).replace(/\s+/g, ' ') : excerpt(d.content);
-        hits.push({ score: (inTitle ? 3 : 0) + (inTag ? 2 : 0) + (idx >= 0 ? 1 : 0), d, snippet });
+        const title = d.title.toLowerCase(), content = d.content.toLowerCase();
+        if (!words.every(w => title.includes(w) || content.includes(w) || tags.some(t => t.includes(w)))) continue;
+        const inTitle = words.every(w => title.includes(w)), inTag = words.some(w => tags.some(t => t.includes(w)));
+        const phrase = content.indexOf(q);
+        const idx = phrase >= 0 ? phrase : Math.min(...words.map(w => content.indexOf(w)).filter(i => i >= 0), Infinity);
+        const snippet = Number.isFinite(idx) ? d.content.slice(Math.max(0, idx - 80), idx + q.length + 120).replace(/\s+/g, ' ') : excerpt(d.content);
+        hits.push({ score: (inTitle ? 4 : 0) + (inTag ? 2 : 0) + (phrase >= 0 ? 2 : 0) + (words.some(w => title.includes(w)) ? 1 : 0), d, snippet });
       }
       hits.sort((x, y) => y.score - x.score || y.d.updated_at - x.d.updated_at);
-      const top = hits.slice(0, Math.min(50, Number(a.limit) || 10));
+      const top = hits.slice(0, clampInt(a.limit, 10, 1, 50));
       return {
         text: top.length ? top.map(h => `- **${h.d.title}** (\`${h.d.id}\`, ${folderPath(h.d.folder_id)}${h.d.parent_id ? ` › ${docTitle(h.d.parent_id)}` : ''}) – …${h.snippet}…`).join('\n') : `Keine Treffer für „${a.query}“.`,
         structured: { results: top.map(h => ({ ...meta(h.d), snippet: h.snippet })) },
@@ -322,7 +339,7 @@ const TOOLS = [
     run(ctx, a) {
       const inFolder = a.folder ? folderDescendants(a.folder) : null;
       const all = accessibleDocs(ctx).filter(d => (!inFolder || inFolder.has(d.folder_id)) && (!a.parent || d.parent_id === a.parent) && (!a.tag || JSON.parse(d.tags).includes(String(a.tag).toLowerCase())));
-      const off = Math.max(0, Number(a.offset) || 0), lim = Math.min(200, Number(a.limit) || 50);
+      const off = clampInt(a.offset, 0, 0, 1e9), lim = clampInt(a.limit, 50, 1, 200);
       const page = all.slice(off, off + lim);
       return {
         text: `${all.length} Dokumente${all.length > page.length ? ` (zeige ${off + 1}–${off + page.length})` : ''}:\n` + page.map(d => `- ${d.title} (\`${d.id}\`, ${folderPath(d.folder_id)}${d.parent_id ? ` › Unterseite von „${docTitle(d.parent_id)}“` : ''}, Tags: ${JSON.parse(d.tags).join(', ') || '–'})`).join('\n'),
@@ -342,7 +359,8 @@ const TOOLS = [
       const synced = getSynced(syncedRefs(d.content));
       const backlinks = db.prepare("SELECT id, title, folder_id FROM documents WHERE deleted_at IS NULL AND id <> ? AND content LIKE ?").all(d.id, `%/doc/${d.id}%`)
         .filter(x => folderOk(ctx, x.folder_id) && new RegExp(`/doc/${d.id}(?![A-Za-z0-9_-])`).test(db.prepare('SELECT content FROM documents WHERE id = ?').get(x.id).content)).map(x => ({ id: x.id, title: x.title }));
-      const linkedAssets = listAssets().filter(x => x.doc === d.id).map(x => ({ id: x.id, name: x.name, kind: x.kind }));
+      // Inventar ist für ordnerbeschränkte Tokens nicht sichtbar – auch nicht als Verweis
+      const linkedAssets = ctx.folders.length ? [] : listAssets().filter(x => x.doc === d.id).map(x => ({ id: x.id, name: x.name, kind: x.kind }));
       const crumbs = docAncestors(d.id).reverse().map(id => `${docTitle(id)} (\`${id}\`)`).join(' › ');
       return {
         text: `# ${d.title}\nID: ${d.id} · Ordner: ${m.folderPath} (\`${d.folder_id}\`)${crumbs ? ` · Elternseiten: ${crumbs}` : ''} · Tags: ${m.tags.join(', ') || '–'} · Version: ${d.version} · Geändert: ${m.updatedAt}${m.updatedBy ? ' von ' + m.updatedBy : ''}`
@@ -378,18 +396,20 @@ const TOOLS = [
     run(ctx, a, req) {
       if (a.template) {
         const t = getTemplate(a.template);
-        if (!t) throw new ToolError(`Vorlage „${a.template}“ nicht gefunden (siehe list_templates).`);
+        if (!t || (ctx.folders.length && !t.builtin)) throw new ToolError(`Vorlage „${a.template}“ nicht gefunden (siehe list_templates).`);
         if (!a.content) a.content = applyPlaceholders(t.content);
-        a.tags = [...(a.tags || []), ...t.tags];
+        a.tags = [...tagList(a.tags), ...t.tags];
       }
       if (!a.content) throw new ToolError('Bitte `content` oder `template` angeben.');
       const p = a.parent ? parentFor(ctx, null, a.parent) : { parent: null, folder: null };
       const folder = p.folder || a.folder;
       if (!folder) throw new ToolError('Bitte `folder` oder `parent` angeben.');
       checkFolder(ctx, folder);
-      const dup = db.prepare('SELECT id, folder_id FROM documents WHERE lower(title) = lower(?) AND deleted_at IS NULL').all(normTitle(a.title)).find(x => folderOk(ctx, x.folder_id));
+      // Gleicher Titel ist nur an derselben Stelle ein Duplikat („Backup“ darf es je Projekt geben)
+      const dup = db.prepare('SELECT id, folder_id, parent_id FROM documents WHERE lower(title) = lower(?) AND deleted_at IS NULL').all(normTitle(a.title))
+        .find(x => x.folder_id === folder && (x.parent_id || null) === (p.parent || null));
       if (dup) throw new ToolError(`Es gibt bereits ein Dokument mit diesem Titel (\`${dup.id}\`). Bitte dieses ergänzen (get_document / append_to_document) oder einen anderen Titel wählen.`);
-      const id = insertDoc({ title: a.title, folder, parent: p.parent, tags: withAiTag(ctx, a.tags || []), content: String(a.content || '').replace(/^#\s+.*\n+/, '') }, ctx.user.id, 'mcp');
+      const id = insertDoc({ title: a.title, folder, parent: p.parent, tags: withAiTag(ctx, tagList(a.tags)), content: dropTitleHeading(a.content, a.title) }, ctx.user.id, 'mcp');
       const d = db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
       logWrite(ctx, req, 'doc.created', id, { title: d.title });
       return { text: `Dokument „${d.title}“ angelegt (ID \`${id}\`, Version 1${p.parent ? `, Unterseite von „${docTitle(p.parent)}“` : ''}, Ordner ${folderPath(folder)}). Link: /doc/${id}`, structured: meta(d) };
@@ -419,8 +439,8 @@ const TOOLS = [
           title: a.title !== undefined ? normTitle(a.title) : undefined,
           folder,
           parent,
-          tags: JSON.stringify(withAiTag(ctx, a.tags !== undefined ? a.tags : JSON.parse(d.tags))),
-          content: a.content !== undefined ? normContent(String(a.content).replace(/^#\s+.*\n+/, '')) : undefined,
+          tags: JSON.stringify(withAiTag(ctx, a.tags !== undefined ? tagList(a.tags) : JSON.parse(d.tags))),
+          content: a.content !== undefined ? normContent(dropTitleHeading(a.content, a.title !== undefined ? a.title : d.title)) : undefined,
         };
         const u = updateDoc(ctx, d, next);
         logWrite(ctx, req, 'doc.updated', d.id, { title: u.title, version: u.version });
@@ -533,7 +553,7 @@ const TOOLS = [
         rows = db.prepare('SELECT * FROM files ORDER BY created_at DESC').all().filter(f => fileAccessible(ctx, f, users));
       }
       if (a.query) { const q = String(a.query).toLowerCase(); rows = rows.filter(f => f.name.toLowerCase().includes(q)); }
-      rows = rows.slice(0, Math.min(200, Number(a.limit) || 50));
+      rows = rows.slice(0, clampInt(a.limit, 50, 1, 200));
       const list = rows.map(f => ({ ...fileDto(f), documents: (users.get(f.id) || []).filter(d => folderOk(ctx, d.folder)).map(d => ({ id: d.id, title: d.title })), markdown: fileSnippet(f) }));
       return {
         text: list.length ? list.map(f => `- \`${f.id}\` ${f.name} · ${f.mime} · ${fmtSize(f.size)}${f.documents.length ? ` · in: ${f.documents.map(d => `${d.title} (\`${d.id}\`)`).join(', ')}` : ' · (nirgends eingebunden)'}\n  Einbinden: ${f.markdown}`).join('\n') : 'Keine Dateien gefunden.',
@@ -618,7 +638,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { full: { type: 'boolean', description: 'Inhalt der Vorlagen mitliefern' } } },
     annotations: { readOnlyHint: true },
     run(ctx, a) {
-      const list = listTemplates();
+      // Eigene Vorlagen können aus Dokumenten anderer Ordner stammen → für beschränkte Tokens nur die mitgelieferten
+      const list = listTemplates().filter(t => !ctx.folders.length || t.builtin);
       return {
         text: list.map(t => `- \`${t.id}\` ${t.name}${t.builtin ? ' (mitgeliefert)' : ''} – ${t.description || ''}${a.full ? `\n\n${t.content}\n` : ''}`).join('\n'),
         structured: { templates: list.map(t => ({ id: t.id, name: t.name, description: t.description, tags: t.tags, builtin: t.builtin, ...(a.full ? { content: t.content } : {}) })) },
@@ -746,9 +767,10 @@ function fileUsage() {
 // mit Beschränkung nur Dateien, die in freigegebenen Dokumenten stecken, oder eigene Uploads.
 function fileAccessible(ctx, f, usage) {
   if (!ctx.folders.length) return true;
-  if (f.created_by === ctx.user.id) return true;
   const docs = (usage || fileUsage()).get(f.id) || [];
   if (docs.some(d => folderOk(ctx, d.folder))) return true;
+  // Eigene, noch nirgends eingebundene Uploads (z. B. direkt nach upload_file) – aber keine Dateien aus fremden Ordnern
+  if (f.created_by === ctx.user.id && !docs.length && !f.doc_id) return true;
   const own = f.doc_id && db.prepare('SELECT folder_id FROM documents WHERE id = ? AND deleted_at IS NULL').get(f.doc_id);
   return !!(own && folderOk(ctx, own.folder_id));
 }
@@ -793,7 +815,8 @@ function visibleTools(ctx) {
 }
 
 async function handle(ctx, msg, req) {
-  const { id, method, params = {} } = msg;
+  const { id, method } = msg;
+  const params = msg.params && typeof msg.params === 'object' && !Array.isArray(msg.params) ? msg.params : {};
   switch (method) {
     case 'initialize': {
       const v = PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0];
@@ -814,7 +837,8 @@ async function handle(ctx, msg, req) {
       if (!tool) return rpcError(id, -32602, `Unbekanntes Werkzeug: ${params.name}`);
       try {
         need(ctx, tool.scope);
-        const r = await tool.run(ctx, params.arguments || {}, req);
+        const args = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
+        const r = await tool.run(ctx, args, req);
         return rpcResult(id, { content: r.content || [{ type: 'text', text: r.text }], ...(r.structured ? { structuredContent: r.structured } : {}), isError: false });
       } catch (e) {
         if (e instanceof ToolError || e instanceof HttpError) return rpcResult(id, { content: [{ type: 'text', text: e.message }], isError: true });
@@ -859,6 +883,7 @@ async function handle(ctx, msg, req) {
 
 // ---------- HTTP-Handler (POST /mcp) ----------
 const limiters = new Map();
+const MAX_BATCH = 50;
 export async function mcpHandler(req, res) {
   // Schutz vor DNS-Rebinding: fremde Browser-Origins ablehnen.
   const origin = req.get('origin');
@@ -880,13 +905,17 @@ export async function mcpHandler(req, res) {
   }
   let lim = limiters.get(s.rateLimitPerMinute);
   if (!lim) { lim = new RateLimiter(s.rateLimitPerMinute, 60000); limiters.set(s.rateLimitPerMinute, lim); }
-  if (!lim.hit('t' + ctx.token.id)) {
-    res.setHeader('Retry-After', String(lim.retryAfter('t' + ctx.token.id)));
-    return res.status(429).json(rpcError(null, -32000, 'Zu viele Anfragen – bitte kurz warten.'));
-  }
   const body = req.body;
   const batch = Array.isArray(body);
   const msgs = batch ? body : [body];
+  if (msgs.length > MAX_BATCH) return res.status(400).json(rpcError(null, -32600, `Zu viele Aufrufe in einer Anfrage (höchstens ${MAX_BATCH}).`));
+  // Das Limit zählt jeden einzelnen Aufruf, nicht die HTTP-Anfrage
+  let over = false;
+  for (let k = 0; k < Math.max(1, msgs.length); k++) if (!lim.hit('t' + ctx.token.id)) over = true;
+  if (over) {
+    res.setHeader('Retry-After', String(lim.retryAfter('t' + ctx.token.id)));
+    return res.status(429).json(rpcError(null, -32000, 'Zu viele Anfragen – bitte kurz warten.'));
+  }
   if (!msgs.length || msgs.some(m => !m || m.jsonrpc !== '2.0' || typeof m.method !== 'string')) {
     if (msgs.every(m => m && m.jsonrpc === '2.0' && (m.result !== undefined || m.error !== undefined))) return res.status(202).end();
     return res.status(400).json(rpcError(null, -32600, 'Ungültige JSON-RPC-Anfrage'));

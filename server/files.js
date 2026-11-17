@@ -154,14 +154,20 @@ export const fileDto = f => ({ id: f.id, name: f.name, mime: f.mime, size: f.siz
 
 // ---------- Signierte Links (für öffentliche Freigaben ohne Sitzung) ----------
 // Gültigkeit auf volle Stunden gerundet, damit Browser-Caches greifen.
-const fileMac = (id, exp) => createHmac('sha256', config.hmacKey).update(`file:${id}:${exp}`).digest('base64url').slice(0, 32);
-export function signedFileUrl(id) {
+// Die Signatur ist an die Freigabe gebunden: Wird sie widerrufen, läuft sie ab oder ändert sich ihr Passwort,
+// gelten bereits ausgegebene Datei-Links nicht mehr.
+const shareStamp = sh => `${sh.id}:${createHash('sha256').update(String(sh.password_hash || '')).digest('hex').slice(0, 16)}`;
+const fileMac = (id, exp, sh) => createHmac('sha256', config.hmacKey).update(`file:${id}:${exp}:${shareStamp(sh)}`).digest('base64url').slice(0, 32);
+export function signedFileUrl(id, share) {
   const exp = Math.ceil(Date.now() / 3600000) * 3600000 + 6 * 3600000;
-  return `/files/${id}?e=${exp}&s=${fileMac(id, exp)}`;
+  return `/files/${id}?e=${exp}&h=${share.id}&s=${fileMac(id, exp, share)}`;
 }
-function validSignature(id, e, sig) {
+function validSignature(id, e, h, sig) {
   const exp = Number(e);
-  return Number.isFinite(exp) && exp > Date.now() && typeof sig === 'string' && safeEqual(sig, fileMac(id, exp));
+  if (!Number.isFinite(exp) || exp <= Date.now() || typeof sig !== 'string' || !/^\d{1,12}$/.test(String(h || ''))) return false;
+  const sh = db.prepare('SELECT id, password_hash, revoked_at, expires_at FROM shares WHERE id = ?').get(Number(h));
+  if (!sh || sh.revoked_at || (sh.expires_at && sh.expires_at < Date.now())) return false;
+  return safeEqual(sig, fileMac(id, exp, sh));
 }
 
 // Alle /files/<id>-Verweise in einem Text
@@ -238,7 +244,7 @@ fileApi.get('/:id', (req, res) => {
 // Auslieferung: angemeldet (Sitzung) oder mit signiertem Link aus einer Freigabe
 export function serveFile(req, res, next) {
   const id = String(req.params.id || '');
-  const signed = req.query.s !== undefined && validSignature(id, req.query.e, req.query.s);
+  const signed = req.query.s !== undefined && validSignature(id, req.query.e, req.query.h, req.query.s);
   const allowed = (req.user && !req.user.mustChangePassword) || signed;
   if (!allowed) return next(new HttpError(req.user || req.query.s ? 403 : 401, 'Kein Zugriff auf diese Datei.'));
   const f = /^[A-Za-z0-9_-]{20}$/.test(id) && db.prepare('SELECT * FROM files WHERE id = ?').get(id);
@@ -252,7 +258,8 @@ export function serveFile(req, res, next) {
   res.setHeader('Content-Security-Policy', `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; media-src 'self'; frame-ancestors 'self'${f.mime === 'application/pdf' ? '' : '; sandbox'}`);
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-  res.setHeader('Cache-Control', 'private, max-age=86400');
+  // Über eine Freigabe nur kurz zwischenspeichern, damit ein Widerruf bald greift
+  res.setHeader('Cache-Control', req.user ? 'private, max-age=86400' : 'private, max-age=600');
   res.sendFile(pathOf(f.id), { dotfiles: 'deny', lastModified: false, headers: {} }, err => {
     if (err && !res.headersSent) next(err);
   });

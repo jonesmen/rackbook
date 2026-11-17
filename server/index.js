@@ -3,8 +3,10 @@ import { config } from './config.js';
 import { db } from './db.js';
 
 initDatabase();
-housekeeping();
-const timer = setInterval(housekeeping, 60 * 60 * 1000);
+// Aufräumarbeiten dürfen den Server nicht beenden, wenn sie einmal scheitern
+const tidy = () => { try { housekeeping(); } catch (e) { console.error('Aufräumarbeiten fehlgeschlagen:', e); } };
+tidy();
+const timer = setInterval(tidy, 60 * 60 * 1000);
 timer.unref();
 
 const server = createApp().listen(config.port, config.host, () => {

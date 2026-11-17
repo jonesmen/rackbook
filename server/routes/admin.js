@@ -68,11 +68,15 @@ r.patch('/users/:id', (req, res) => {
 r.post('/users/:id/password', async (req, res) => {
   const u = load(req.params.id);
   if (!u) throw new HttpError(404, 'Benutzer nicht gefunden.');
+  // Das eigene Passwort nur mit Kenntnis des bisherigen ändern (sonst macht eine gekaperte Sitzung sich dauerhaft)
+  if (u.id === req.user.id) throw new HttpError(409, 'Das eigene Passwort bitte unter Einstellungen → Sicherheit ändern.');
   const err = validatePassword(req.body?.password, u.username);
   if (err) throw new HttpError(400, err);
-  db.prepare('UPDATE users SET password_hash = ?, password_changed_at = ?, must_change_password = ?, failed_logins = 0, locked_until = 0, updated_at = ? WHERE id = ?')
-    .run(await hashPassword(req.body.password), Date.now(), u.id === req.user.id ? 0 : 1, Date.now(), u.id);
-  revokeUserSessions(u.id, u.id === req.user.id ? req.sessionId : null);
+  db.prepare('UPDATE users SET password_hash = ?, password_changed_at = ?, must_change_password = 1, failed_logins = 0, locked_until = 0, updated_at = ? WHERE id = ?')
+    .run(await hashPassword(req.body.password), Date.now(), Date.now(), u.id);
+  revokeUserSessions(u.id, null);
+  // Auch KI-Zugriffstokens widerrufen – ein Zurücksetzen bedeutet meist: Konto war nicht mehr sicher
+  db.prepare('UPDATE mcp_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').run(Date.now(), u.id);
   audit(req, 'admin.password_reset', u.username);
   res.json({ user: adminView(load(u.id)) });
 });
@@ -80,6 +84,7 @@ r.post('/users/:id/password', async (req, res) => {
 r.post('/users/:id/reset-2fa', (req, res) => {
   const u = load(req.params.id);
   if (!u) throw new HttpError(404, 'Benutzer nicht gefunden.');
+  if (u.id === req.user.id) throw new HttpError(409, 'Die eigene Zwei-Faktor-Anmeldung bitte unter Einstellungen → Sicherheit deaktivieren (mit Passwort und Code).');
   db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_last_step = 0, updated_at = ? WHERE id = ?').run(Date.now(), u.id);
   revokeUserSessions(u.id, u.id === req.user.id ? req.sessionId : null);
   audit(req, 'admin.2fa_reset', u.username);
