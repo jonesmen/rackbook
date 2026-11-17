@@ -484,8 +484,9 @@ class App extends Component {
   }
   exportJson() {
     const data = {
-      app: 'rackbook', format: 1, exportedAt: Date.now(), folders: this.state.folders,
-      documents: this.state.docs.map(d => ({ id: d.id, title: d.title, folder: d.folder, tags: d.tags, content: d.content, pinned: d.pinned, created: d.created, updated: d.updated, reviewed: d.reviewed })),
+      app: 'rackbook', format: 4, exportedAt: Date.now(), folders: this.state.folders,
+      // inklusive Elternseite, damit die Seitenstruktur beim Einspielen erhalten bleibt
+      documents: this.state.docs.map(d => ({ id: d.id, title: d.title, folder: d.folder, parent: d.parent || null, tags: d.tags, content: d.content, pinned: d.pinned, created: d.created, updated: d.updated, reviewed: d.reviewed })),
     };
     download(`rackbook-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 2), 'application/json');
   }

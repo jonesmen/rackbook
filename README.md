@@ -21,7 +21,7 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 - Benachrichtigungen für Dokumente, die länger nicht geprüft wurden („Als geprüft markieren“)
 - Versionsverlauf pro Dokument mit Wiederherstellung, Papierkorb mit „Rückgängig“
 - Erkennung gleichzeitiger Bearbeitung (kein stilles Überschreiben)
-- Import von `.md`-Dateien, Export als Markdown oder JSON-Backup, Backup einspielen, Beispieldaten
+- Import von `.md`-Dateien, Export als Markdown oder JSON, automatische vollständige Sicherungen mit Wiederherstellung, Beispieldaten
 
 **Benutzerverwaltung**
 - Der **erste registrierte Benutzer wird Administrator** (Ersteinrichtung im Browser)
@@ -75,6 +75,7 @@ Alle Einstellungen stehen kommentiert in [`.env`](.env). Die wichtigsten:
 | `RACKBOOK_PORT` / `RACKBOOK_BIND` | `3000` / `0.0.0.0` | Port und Bind-Adresse auf dem Host |
 | `PUBLIC_URL` | leer | Öffentliche URL, z. B. `https://docs.example.de` (strikte Origin-Prüfung) |
 | `TRUST_PROXY` | `false` | Anzahl Reverse Proxys davor (z. B. `1`) |
+| `ACCESS_LOG` | `false` | Zugriffsprotokoll: eine Zeile je API-Anfrage in der Container-Ausgabe |
 | `SETUP_TOKEN` | – | Optional: Die Ersteinrichtung (erster Administrator) verlangt dieses Token. Sinnvoll, wenn die Instanz schon vor der Einrichtung aus dem Netz erreichbar ist |
 | `COOKIE_SECURE` | `auto` | Secure-Cookie bei HTTPS |
 | `APP_SECRET` | leer | Schlüssel für 2FA-Verschlüsselung; leer = automatisch im Volume erzeugt |
@@ -228,7 +229,16 @@ docker run --rm -v rackbook-data:/data -v "$PWD":/backup alpine \
 docker compose up -d
 ```
 
-Zusätzlich können Administratoren unter **Einstellungen → Daten** ein JSON-Backup aller Dokumente bzw. ein **Komplett-Backup inkl. hochgeladener Dateien und synchronisierter Blöcke** herunterladen und wieder einspielen. Hochgeladene Dateien liegen im Volume unter `files/`.
+### Sicherungen in der Oberfläche
+
+Unter **Verwaltung → Sicherungen** erstellt Rackbook vollständige Sicherungen im laufenden Betrieb: ein Archiv (`.tar.gz`) mit einem konsistenten Abbild der Datenbank (Dokumente mit Versionen, Inventar, Vorlagen, Benutzer, Freigaben, Einstellungen), allen hochgeladenen Dateien und dem Schlüssel für verschlüsselte Felder.
+
+- **Automatisch**: täglich (Standard) oder wöchentlich, die letzten 5 (einstellbar) bleiben erhalten. Bei zu wenig freiem Speicherplatz wird die Sicherung übersprungen und das im Reiter angezeigt.
+- **Ablage**: im Volume unter `backups/`. Das schützt vor Bedienfehlern, nicht vor dem Verlust des Volumes – Sicherungen deshalb zusätzlich herunterladen oder den Ordner in die eigene Datensicherung aufnehmen.
+- **Wiederherstellen**: eine Sicherung aus der Liste (oder eine hochgeladene) ersetzt den gesamten Stand; Rackbook startet danach neu. Der bisherige Stand bleibt einmalig unter `before-restore/` liegen.
+- Das Archiv enthält Passwort-Hashes und Schlüssel – wie ein Volume-Backup vertraulich behandeln.
+
+Unter **Einstellungen → Daten** lassen sich zusätzlich die Inhalte (Dokumente, Ordner, Vorlagen, Inventar) als JSON exportieren und in eine andere Instanz einspielen; dabei werden vorhandene Dokumente gleicher ID aktualisiert, der bisherige Stand bleibt als Version erhalten.
 
 > Wird ein Bind-Mount statt des benannten Volumes verwendet, muss das Verzeichnis dem Benutzer mit UID 1000 gehören (`chown 1000:1000 ./data`).
 

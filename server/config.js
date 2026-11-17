@@ -70,6 +70,7 @@ export const config = {
   auditRetentionDays: int(env.AUDIT_RETENTION_DAYS, 365, 1, 'AUDIT_RETENTION_DAYS'),
   maxDocBytes: int(env.MAX_DOC_KB, 1024, 16, 'MAX_DOC_KB') * 1024,
   seedSampleDocs: bool(env.SEED_SAMPLE_DOCS, false),
+  accessLog: bool(env.ACCESS_LOG, false),
   appName: env.APP_NAME || 'Rackbook',
   encKey: createHash('sha256').update('rackbook-enc:' + secret).digest(),
   hmacKey: createHash('sha256').update('rackbook-mac:' + secret).digest(),

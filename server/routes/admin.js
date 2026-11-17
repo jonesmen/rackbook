@@ -4,7 +4,8 @@ import { config } from '../config.js';
 import { HttpError, hashPassword, validatePassword } from '../security.js';
 import { audit, publicUser, requireRole, revokeUserSessions } from '../auth.js';
 import { USERNAME_RE, cleanName } from './auth.js';
-import { folderExists, insertDoc, normContent, normTags, normTitle } from './docs.js';
+import { folderExists, insertDoc, normContent, normTags, normTitle, saveRevision } from './docs.js';
+import { snapshotApi } from '../backup.js';
 import { DEFAULT_FOLDERS, sampleDocs } from '../seed.js';
 import { checkFolderParent, checkDocParent } from '../tree.js';
 import { adminView as oidcAdminView, saveOidcSettings, testConnection } from '../oidc.js';
@@ -15,6 +16,7 @@ import { getEditorSettings, normDrawioUrl, exportFiles, importFile, fileStats, i
 
 const r = Router();
 r.use(requireRole('admin'));
+r.use('/snapshots', snapshotApi);
 
 const ROLES = ['admin', 'editor', 'viewer'];
 const STATUSES = ['active', 'pending', 'disabled'];
@@ -187,6 +189,11 @@ r.put('/editor', (req, res) => {
   const next = { ...cur };
   if (b.uploads !== undefined) next.uploads = !!b.uploads;
   if (b.embeds !== undefined) next.embeds = !!b.embeds;
+  if (b.uploadQuotaMb !== undefined) {
+    const n = Math.round(Number(b.uploadQuotaMb));
+    if (!(n >= 0 && n <= 1048576)) throw new HttpError(400, 'Das Kontingent muss zwischen 0 (unbegrenzt) und 1048576 MB liegen.');
+    next.uploadQuotaMb = n;
+  }
   if (b.uploadMaxMb !== undefined) {
     const n = Math.round(Number(b.uploadMaxMb));
     if (!(n >= 1 && n <= 2048)) throw new HttpError(400, 'Die maximale Dateigröße muss zwischen 1 und 2048 MB liegen.');
@@ -232,7 +239,7 @@ r.post('/restore', (req, res) => {
   if (!Array.isArray(b.documents)) throw new HttpError(400, 'Ungültige Backup-Datei.');
   const result = tx(() => {
     let folders = 0, created = 0, updated = 0;
-    const fid = v => String(v || '').toLowerCase().replace(/[^a-z0-9äöüß-]/g, '-').slice(0, 40);
+    const fid = v => String(v || '').toLowerCase().replace(/[^a-z0-9äöüß-]/g, '-').slice(0, 64);
     const inFolders = Array.isArray(b.folders) ? b.folders : [];
     for (const f of inFolders) {
       const id = fid(f.id);
@@ -256,6 +263,8 @@ r.post('/restore', (req, res) => {
       const exists = id && db.prepare('SELECT 1 FROM documents WHERE id = ?').get(id);
       const ts = n => (Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : Date.now());
       if (exists) {
+        // Bisherigen Stand als Version aufheben, bevor er überschrieben wird
+        saveRevision(db.prepare('SELECT * FROM documents WHERE id = ?').get(id), req.user.id);
         db.prepare(`UPDATE documents SET title = ?, folder_id = ?, tags = ?, content = ?, pinned = ?, version = version + 1,
                     updated_at = ?, updated_by = ?, updated_via = 'web', deleted_at = NULL WHERE id = ?`)
           .run(normTitle(d.title), folder, JSON.stringify(normTags(d.tags)), normContent(d.content), d.pinned ? 1 : 0, ts(d.updated), req.user.id, id);
