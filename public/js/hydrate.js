@@ -83,12 +83,31 @@ export async function renderMermaidInto(el, src) {
   }
 }
 
+// Syntax-Hervorhebung: Bibliothek erst laden, wenn ein Code-Block mit Sprache vorkommt
+let hljsReady = null;
+const HL_ALIAS = { sh: 'bash', shell: 'bash', zsh: 'bash', console: 'bash', yml: 'yaml', js: 'javascript', ts: 'typescript', py: 'python', docker: 'dockerfile', conf: 'ini', toml: 'ini', html: 'xml', text: '', txt: '', plain: '' };
+async function highlightCode(nodes) {
+  try {
+    hljsReady = hljsReady || import('/vendor/hljs/hljs.js').then(m => m.default);
+    const hljs = await hljsReady;
+    for (const pre of nodes) {
+      const lang = HL_ALIAS[pre.dataset.lang] ?? pre.dataset.lang;
+      pre.classList.add('hl-done');
+      if (!lang || !hljs.getLanguage(lang) || pre.textContent.length > 60000) continue;
+      // Die Ausgabe von highlight.js ist escaped; es entstehen nur <span class="hljs-…">
+      pre.innerHTML = hljs.highlight(pre.textContent, { language: lang, ignoreIllegals: true }).value;
+    }
+  } catch { /* ohne Hervorhebung weiter */ }
+}
+
 // Gerenderten Dokumentinhalt anreichern: Mathe, Mermaid, sortierbare Datenbanken.
 export function hydrate(root) {
   if (!root) return;
   root.querySelectorAll('.md-math:not(.rendered):not(.error)').forEach(el => renderTex(el, el.dataset.tex, false));
   root.querySelectorAll('.md-math-block:not(.rendered):not(.error)').forEach(el => renderTex(el, el.dataset.tex, true));
   root.querySelectorAll('.md-mermaid:not(.rendered):not(.error)').forEach(el => renderMermaidInto(el, el.dataset.src));
+  const code = Array.from(root.querySelectorAll('pre.md-pre[data-lang]:not(.hl-done)'));
+  if (code.length) highlightCode(code);
 }
 
 // Klick auf Spaltenkopf einer Datenbank (Base) → sortieren

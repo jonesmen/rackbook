@@ -188,6 +188,23 @@ export class DocEditor extends Component {
     this.setState({ draft: null, title: dr.title || '', tags: dr.tags ?? this.state.tags, content: dr.content, version: this.state.id ? (dr.version || this.state.version) : 0, status: 'dirty', key: this.state.key + 1 }, () => this.save());
   }
   dropDraft() { clearDraft(this.state.id); this.setState({ draft: null }); }
+  // Suchen & Ersetzen: im Block-Editor über die Blöcke, in der Markdown-Ansicht über den Quelltext
+  findRe() { const f = this.state.find; return new RegExp(f.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), f.cs ? 'g' : 'gi'); }
+  countMatches() {
+    const f = this.state.find;
+    if (!f || !f.q) return 0;
+    if (this.state.raw || !this.edRef.current) return (this.state.content.match(this.findRe()) || []).length;
+    return this.edRef.current.findReplace(f.q, undefined, f.cs);
+  }
+  replaceAll() {
+    const f = this.state.find;
+    if (!f || !f.q) return;
+    let n;
+    if (this.state.raw || !this.edRef.current) { n = (this.state.content.match(this.findRe()) || []).length; if (n) this.set({ content: this.state.content.replace(this.findRe(), () => f.r) }); }
+    else { n = this.edRef.current.findReplace(f.q, f.r, f.cs); this.edRef.current.flush(); }
+    this.props.app.flash(n ? `${n} Stelle(n) ersetzt` : 'Nichts gefunden');
+    this.forceUpdate();
+  }
   toggleRaw() {
     if (this.edRef.current) this.edRef.current.flush();
     this.setState({ raw: !this.state.raw, key: this.state.key + 1 });
@@ -245,8 +262,18 @@ export class DocEditor extends Component {
           <label class="field-chip tags"><span class="ms">sell</span>
             <input value=${s.tags} placeholder="Tags, kommagetrennt" aria-label="Tags" onInput=${e => this.set({ tags: e.target.value })} />
           </label>
+          <button type="button" class=${'field-chip btn-chip' + (s.find ? ' on' : '')} title="Suchen & Ersetzen im Dokument" onClick=${() => this.setState({ find: s.find ? null : { q: '', r: '', cs: false } })}><span class="ms">find_replace</span>Ersetzen</button>
           <button type="button" class=${'field-chip btn-chip' + (s.raw ? ' on' : '')} title="Markdown-Quelltext bearbeiten" onClick=${() => this.toggleRaw()}><span class="ms">code</span>Markdown</button>
         </div>
+        ${s.find && html`<div class="find-bar">
+          <input class="input" value=${s.find.q} placeholder="Suchen nach …" aria-label="Suchen nach" autofocus onInput=${e => this.setState({ find: { ...s.find, q: e.target.value } })} />
+          <input class="input" value=${s.find.r} placeholder="Ersetzen durch …" aria-label="Ersetzen durch" onInput=${e => this.setState({ find: { ...s.find, r: e.target.value } })}
+            onKeyDown=${e => { if (e.key === 'Enter') { e.preventDefault(); this.replaceAll(); } }} />
+          <label class="small muted find-cs"><input type="checkbox" checked=${s.find.cs} onChange=${e => this.setState({ find: { ...s.find, cs: e.target.checked } })} />Groß-/Kleinschreibung</label>
+          <span class="small muted">${s.find.q ? `${this.countMatches()} Treffer` : ''}</span>
+          <button type="button" class="btn btn-primary sm" disabled=${!s.find.q || !this.countMatches()} onClick=${() => this.replaceAll()}>Alle ersetzen</button>
+          <button type="button" class="w-icon" title="Schließen" onClick=${() => this.setState({ find: null })}><span class="ms">close</span></button>
+        </div>`}
         <div class="article editor-article">
           ${s.raw
             ? html`<textarea class="editor-ta raw" value=${s.content} spellcheck="false" aria-label="Inhalt (Markdown)" placeholder="Markdown …" wrap=${app.settings().wrap === false ? 'off' : 'soft'}

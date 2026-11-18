@@ -935,3 +935,31 @@ a.md-asset-h:hover .md-asset-n { text-decoration: underline; }
 
 .tag-admin { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .tag-admin-row { display: flex; align-items: center; gap: 2px; }
+
+/* Ziehen & Ablegen im Seitenbaum */
+.nav-item.drop-into { background: color-mix(in oklab, var(--acc-soft) 45%, transparent); box-shadow: inset 0 0 0 1.5px var(--acc-strong); }
+.nav-item.drop-before { box-shadow: inset 0 2px 0 var(--acc-strong); }
+.nav-item.drop-after { box-shadow: inset 0 -2px 0 var(--acc-strong); }
+
+/* Syntax-Hervorhebung (Code-Blöcke sind immer dunkel) */
+.md-pre .hljs-comment, .md-pre .hljs-quote { color: #7b8aa3; font-style: italic; }
+.md-pre .hljs-keyword, .md-pre .hljs-selector-tag, .md-pre .hljs-literal, .md-pre .hljs-built_in, .md-pre .hljs-type { color: #c4a7ff; }
+.md-pre .hljs-string, .md-pre .hljs-regexp, .md-pre .hljs-addition, .md-pre .hljs-symbol { color: #9ad8a0; }
+.md-pre .hljs-number, .md-pre .hljs-bullet, .md-pre .hljs-meta { color: #f0b072; }
+.md-pre .hljs-attr, .md-pre .hljs-attribute, .md-pre .hljs-variable, .md-pre .hljs-template-variable, .md-pre .hljs-property { color: #7fc8f8; }
+.md-pre .hljs-title, .md-pre .hljs-section, .md-pre .hljs-name, .md-pre .hljs-function { color: #f6d47a; }
+.md-pre .hljs-deletion { color: #f29a9a; }
+.md-pre .hljs-emphasis { font-style: italic; } .md-pre .hljs-strong { font-weight: 700; }
+
+/* Bildbreite */
+.md-figure.w-25 .md-img { width: 25%; } .md-figure.w-50 .md-img { width: 50%; } .md-figure.w-75 .md-img { width: 75%; }
+.w-icon.txt { font: 600 10.5px/1 var(--mono); width: auto; padding: 0 6px; color: var(--muted); }
+.w-icon.txt.on { background: var(--acc-soft); color: var(--ink); }
+.w-caption.alt { font-size: 11.5px; color: var(--faint); display: none; }
+.w-media:hover .w-caption.alt, .w-media:focus-within .w-caption.alt { display: block; }
+/* Suchen & Ersetzen */
+.find-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
+.find-bar .input { flex: 1 1 160px; padding: 7px 9px; font-size: 13px; }
+.find-cs { display: flex; gap: 5px; align-items: center; white-space: nowrap; }
+
+.offline-bar { display: flex; gap: 8px; align-items: center; justify-content: center; padding: 8px 14px; background: var(--warn-bg); color: var(--warn-ink); font-size: 12.5px; font-weight: 500; border-bottom: 1px solid var(--warn-line); }

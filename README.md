@@ -22,6 +22,8 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 - Versionsverlauf pro Dokument mit Wiederherstellung, Papierkorb mit „Rückgängig“
 - Erkennung gleichzeitiger Bearbeitung (kein stilles Überschreiben)
 - Import von `.md`-Dateien, Export als ZIP (Markdown-Dateien in Ordnerstruktur mit Anhängen), Markdown oder JSON, automatische vollständige Sicherungen mit Wiederherstellung, Beispieldaten
+- Seiten und Ordner im Seitenbaum per Ziehen verschieben und sortieren; Suchen & Ersetzen, Syntax-Hervorhebung, Einfügen mit Formatierung, Bildbreite im Editor
+- Installierbar als App (PWA); der zuletzt geladene Stand ist ohne Verbindung lesbar
 - Versionsvergleich, Duplizieren, Mehrfachaktionen in der Dokumentliste, Tag-Verwaltung, „Zuletzt angesehen“, Hinweis auf Verweise ins Leere
 
 **Benutzerverwaltung**

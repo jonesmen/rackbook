@@ -68,6 +68,9 @@ function urlFor(s) {
   }
 }
 
+// Manuelle Reihenfolge (sort > 0) vor alphabetischer
+const bySort = (a, b) => ((a.sort || 1e9) - (b.sort || 1e9)) || a.title.localeCompare(b.title, 'de');
+
 class App extends Component {
   mainRef = { current: null };
   docEditor = null;
@@ -121,6 +124,12 @@ class App extends Component {
     window.addEventListener('beforeunload', this.onBeforeUnload);
     window.addEventListener('focus', this.onFocus);
     window.addEventListener('rackbook-theme', () => this.forceUpdate());
+    // Installierbare App / Lesen ohne Verbindung (nur über HTTPS oder localhost möglich)
+    if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    const net = () => this.setState({ offline: !navigator.onLine });
+    window.addEventListener('online', () => { net(); this.refresh(); });
+    window.addEventListener('offline', net);
+    net();
     // Schmaler Bildschirm (Handy)?
     this._mq = matchMedia('(max-width: 760px)');
     this._mq.addEventListener('change', e => this.setState({ narrow: e.matches, mobileNav: false }));
@@ -185,6 +194,8 @@ class App extends Component {
     let redirect = null;
     try { redirect = (await api('/auth/logout', { method: 'POST', body: {} })).redirect; } catch { /* egal */ }
     setCsrf(null);
+    // Für die Offline-Ansicht gemerkte Inhalte auf diesem Gerät verwerfen
+    try { if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage('clear'); } catch { /* egal */ }
     if (redirect) { location.assign(redirect); return; }
     history.replaceState(null, '', '/');
     this.setState({ boot: 'loading', user: null, docs: [], userMenu: false });
@@ -202,7 +213,7 @@ class App extends Component {
     const docById = new Map(docs.map(d => [d.id, d])), folderById = new Map(folders.map(f => [f.id, f]));
     const kids = new Map(), subs = new Map();
     for (const d of docs) if (d.parent) { if (!kids.has(d.parent)) kids.set(d.parent, []); kids.get(d.parent).push(d); }
-    for (const l of kids.values()) l.sort((a, b) => a.title.localeCompare(b.title, 'de'));
+    for (const l of kids.values()) l.sort(bySort);
     for (const f of folders) { const p = f.parent && folderById.has(f.parent) ? f.parent : null; if (!subs.has(p)) subs.set(p, []); subs.get(p).push(f); }
     return (this._idx = { docs, folders, docById, folderById, kids, subs });
   }
@@ -640,6 +651,7 @@ class App extends Component {
         ${s.narrow && !s.mobileNav && html`<button type="button" class="nav-fab" aria-label="Navigation öffnen" title="Navigation" onClick=${e => { stop(e); this.setState({ mobileNav: true }); }}><span class="ms s20">menu</span></button>`}
         ${this.renderSidebar(expanded, staleDocs)}
         <main class="main" ref=${this.mainRef}>
+          ${s.offline && html`<div class="offline-bar"><span class="ms">cloud_off</span>Keine Verbindung – du siehst den zuletzt geladenen Stand. Änderungen sind erst wieder mit Verbindung möglich.</div>`}
           <div class="container">
             ${s.page === 'dashboard' && this.renderDashboard()}
             ${s.page === 'docs' && this.renderDocs()}
@@ -762,6 +774,34 @@ class App extends Component {
       </aside>`;
   }
 
+  // Abgelegt im Seitenbaum: Seite oder Ordner verschieben bzw. einsortieren
+  async treeDropped(drag, target, pos) {
+    try {
+      if (drag.type === 'doc') {
+        const body = target.type === 'folder' ? { parent: '', folder: target.id }
+          : pos === 'into' ? { parent: target.id }
+          : { parent: this.doc(target.id).parent || '', folder: this.doc(target.id).folder, [pos]: target.id };
+        const r = await api(`/docs/${encodeURIComponent(drag.id)}/move`, { method: 'POST', body });
+        this.setState({ docs: r.docs });
+        if (pos === 'into') this.toggleNode(target.type === 'folder' ? target.id : 'd:' + target.id, true);
+        this.flash('Verschoben');
+      } else if (target.type === 'folder') {
+        const t = this.F(target.id), f = this.F(drag.id);
+        const parent = pos === 'into' ? target.id : (this.fParent(t) || null);
+        if ((this.fParent(f) || null) !== parent) await api('/folders/' + encodeURIComponent(drag.id), { method: 'PATCH', body: { parent: parent || '' } });
+        let r = await api('/folders');
+        if (pos !== 'into') {
+          // Reihenfolge der Geschwister neu setzen
+          const sibs = r.folders.filter(x => (x.parent || null) === parent && x.id !== drag.id).map(x => x.id);
+          sibs.splice(sibs.indexOf(target.id) + (pos === 'after' ? 1 : 0), 0, drag.id);
+          r = await api('/folders/order', { method: 'POST', body: { ids: sibs } });
+        } else this.toggleNode(target.id, true);
+        this.setState({ folders: r.folders });
+        this.flash('Ordner verschoben');
+      }
+    } catch (e) { this.fail(e); }
+  }
+
   // Seitenbaum links: Ordner → Unterordner → Dokumente → Unterseiten (jede Ebene aufklappbar)
   renderFolderTree(expanded) {
     const s = this.state;
@@ -771,12 +811,31 @@ class App extends Component {
       ? html`<span class="ms tree-chev" role="button" aria-label=${isOpen(key) ? 'Zuklappen' : 'Aufklappen'} onClick=${e => { stop(e); this.toggleNode(key, !isOpen(key)); }}>${isOpen(key) ? 'expand_more' : 'chevron_right'}</span>`
       : html`<span class="tree-chev-space"></span>`);
     const items = [];
+    // Ziehen & Ablegen: oberes/unteres Viertel = davor/danach einsortieren, Mitte = hinein (Unterseite bzw. in den Ordner)
+    const dnd = this.canEdit() && expanded && !s.narrow;
+    const dragProps = (type, id) => (!dnd ? {} : {
+      draggable: true,
+      onDragStart: e => { this.treeDrag = { type, id }; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', id); } catch { /* egal */ } },
+      onDragEnd: () => { this.treeDrag = null; if (this.state.treeDrop) this.setState({ treeDrop: null }); },
+      onDragOver: e => {
+        const g = this.treeDrag;
+        if (!g || g.id === id || (g.type === 'folder' && type === 'doc')) return;
+        e.preventDefault();
+        const r = e.currentTarget.getBoundingClientRect(), y = (e.clientY - r.top) / r.height;
+        const pos = g.type === 'doc' && type === 'folder' ? 'into' : y < 0.28 ? 'before' : y > 0.72 ? 'after' : 'into';
+        const cur = this.state.treeDrop;
+        if (!cur || cur.key !== type + ':' + id || cur.pos !== pos) this.setState({ treeDrop: { key: type + ':' + id, pos } });
+      },
+      onDragLeave: e => { if (!e.currentTarget.contains(e.relatedTarget) && this.state.treeDrop && this.state.treeDrop.key === type + ':' + id) this.setState({ treeDrop: null }); },
+      onDrop: e => { e.preventDefault(); const drop = this.state.treeDrop; this.setState({ treeDrop: null }); if (drop && this.treeDrag) this.treeDropped(this.treeDrag, { type, id }, drop.pos); this.treeDrag = null; },
+    });
+    const dropCls = (type, id) => (s.treeDrop && s.treeDrop.key === type + ':' + id ? ' drop-' + s.treeDrop.pos : '');
     const walkDocs = (list, depth) => list.forEach(d => {
       const kids = this.docChildren(d.id);
       const key = 'd:' + d.id;
       const active = (s.page === 'doc' || s.page === 'edit') && s.docId === d.id;
       items.push(html`
-        <button type="button" key=${key} class=${'nav-item folder tree-doc' + (active ? ' active' : '')} title=${d.title} style=${pad(depth)}
+        <button type="button" key=${key} class=${'nav-item folder tree-doc' + (active ? ' active' : '') + dropCls('doc', d.id)} title=${d.title} style=${pad(depth)} ...${dragProps('doc', d.id)}
           onClick=${() => { this.go('doc', { docId: d.id }); if (kids.length) this.toggleNode(key, true); }}>
           <span class="ms">${kids.length ? 'auto_stories' : 'description'}</span>
           ${expanded && html`<span class="grow">${d.title}</span>`}
@@ -787,13 +846,13 @@ class App extends Component {
     });
     const walk = (p, depth) => this.subFolders(p).forEach(f => {
       const subs = this.subFolders(f.id);
-      const top = s.docs.filter(d => d.folder === f.id && !(d.parent && this.doc(d.parent))).sort((a, b) => a.title.localeCompare(b.title, 'de'));
+      const top = s.docs.filter(d => d.folder === f.id && !(d.parent && this.doc(d.parent))).sort(bySort);
       // Direkter Inhalt: Unterordner + Seiten auf oberster Ebene (Unterseiten zählen bei ihrer Elternseite)
       const count = subs.length + top.length;
       const countTitle = [subs.length && `${subs.length} Unterordner`, top.length && `${top.length} ${top.length === 1 ? 'Seite' : 'Seiten'}`].filter(Boolean).join(', ');
       const active = s.page === 'docs' && s.folder === f.id;
       items.push(html`
-        <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '')} title=${this.folderPath(f.id)} style=${pad(depth)}
+        <button type="button" key=${f.id} class=${'nav-item folder' + (active ? ' active' : '') + dropCls('folder', f.id)} title=${this.folderPath(f.id)} style=${pad(depth)} ...${dragProps('folder', f.id)}
           onClick=${() => { this.go('docs', { folder: f.id, tag: null, q: '' }); this.toggleNode(f.id, true); }}>
           <span class="ms">${f.icon}</span>
           ${expanded && html`<span class="grow">${f.name}</span>`}

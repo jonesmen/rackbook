@@ -394,6 +394,7 @@ const listItem = (b, marker) => {
   return pad + marker + lines[0] + lines.slice(1).map(x => '\\\n' + pad + '  ' + guardLine(x.replace(/^\s+/, ''))).join('');
 };
 const ALIGN = { left: ':--', center: ':-:', right: '--:' };
+export const IMG_WIDTHS = [25, 50, 75];
 const directive = (name, obj) => `::${name}${obj && Object.keys(obj).length ? ' ' + JSON.stringify(obj) : ''}`;
 const pick = (b, keys) => Object.fromEntries(keys.filter(k => b[k] !== undefined && b[k] !== '' && b[k] !== null).map(k => [k, b[k]]));
 
@@ -439,6 +440,8 @@ export function serialize(blocks) {
         break;
       }
       case 'image':
+        // Mit Breitenangabe als Direktive (Standard-Markdown kennt keine Bildgröße)
+        if (b.src && IMG_WIDTHS.includes(Number(b.width))) { s = directive('image', { src: b.src, ...pick(b, ['alt', 'caption']), width: Number(b.width) }); break; }
         s = b.src ? `![${String(b.alt || '').replace(/[[\]\n]/g, '')}](${encUrl(b.src)}${b.caption ? ` "${String(b.caption).replace(/"/g, '\'').replace(/\n/g, ' ')}"` : ''})` : directive('image', {});
         break;
       case 'video': case 'audio': case 'pdf': case 'file': s = directive(b.type, pick(b, ['src', 'name', 'size'])); break;
@@ -538,7 +541,7 @@ function renderBlock(b, ctx, st) {
       const c = CALLOUTS[b.kind] || CALLOUTS.note;
       return `<div class="md-callout k-${esc(b.kind in CALLOUTS ? b.kind : 'note')}"><span class="ms">${c.icon}</span><div><div class="md-callout-t">${b.title ? inline(b.title, ctx) : c.label}</div>${inline(b.text, ctx)}</div></div>`;
     }
-    case 'code': return `<div class="md-pre-wrap">${b.lang ? `<span class="md-lang">${esc(b.lang)}</span>` : ''}<button type="button" class="md-copy ms" title="Kopieren" data-copy>content_copy</button><pre class="md-pre">${esc(b.text)}</pre></div>`;
+    case 'code': return `<div class="md-pre-wrap">${b.lang ? `<span class="md-lang">${esc(b.lang)}</span>` : ''}<button type="button" class="md-copy ms" title="Kopieren" data-copy>content_copy</button><pre class="md-pre"${b.lang ? ` data-lang="${esc(String(b.lang).split(/\s/)[0].toLowerCase())}"` : ''}>${esc(b.text)}</pre></div>`;
     case 'math': return `<div class="md-math-block" data-tex="${esc(b.text)}"><pre class="md-pre">${esc(b.text)}</pre></div>`;
     case 'mermaid': return `<div class="md-mermaid" data-src="${esc(b.text)}"><pre class="md-pre">${esc(b.text)}</pre></div>`;
     case 'hr': return '<hr class="md-hr">';
@@ -548,7 +551,7 @@ function renderBlock(b, ctx, st) {
       if (!b.src) return '';
       const src = mediaSrc(b.src, ctx);
       if (!src) return `<div class="md-media-missing"><span class="ms">image</span>${esc(b.alt || 'Bild')}</div>`;
-      return `<figure class="md-figure"><img class="md-img" src="${esc(src)}" alt="${esc(b.alt || '')}" loading="lazy">${b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : ''}</figure>`;
+      return `<figure class="md-figure${IMG_WIDTHS.includes(Number(b.width)) ? ' w-' + Number(b.width) : ''}"><img class="md-img" src="${esc(src)}" alt="${esc(b.alt || '')}" loading="lazy">${b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : ''}</figure>`;
     }
     case 'video': case 'audio': {
       if (!b.src) return '';
