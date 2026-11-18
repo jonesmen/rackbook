@@ -3,7 +3,7 @@ import { html, useState, useEffect } from '/vendor/preact-htm.js';
 import { api, getCsrf } from './api.js';
 import { McpPanel, McpAdmin } from './mcp-views.js';
 import { SharesPanel, SharesAdmin } from './share-views.js';
-import { Icon, Toggle, fcol, fmtDate, fmtDateTime, describeUA, ROLE_LABEL } from './util.js';
+import { Icon, Toggle, Overlay, fcol, fmtDate, fmtDateTime, describeUA, ROLE_LABEL, fmtDateIn } from './util.js';
 
 const PanelHead = ({ title, desc }) => html`<div><h2 class="h2 s16">${title}</h2>${desc && html`<p class="desc">${desc}</p>`}</div>`;
 const SetToggle = ({ title, desc, on, onClick }) => html`
@@ -36,6 +36,10 @@ function AppearancePanel({ app }) {
   return html`
     <div class="panel tight">
       <h2 class="h2 s16" style=${{ marginBottom: '8px' }}>Darstellung</h2>
+      <div class="set-row static">
+        <div><div class="t">Design</div><div class="s">Hell, dunkel oder wie im Betriebssystem eingestellt</div></div>
+        <div class="seg">${[['system', 'System'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([v, l]) => html`<button type="button" class=${(st.theme || 'system') === v ? 'on' : ''} onClick=${() => app.setSettings({ theme: v })}>${l}</button>`)}</div>
+      </div>
       <div class="set-row static">
         <div><div class="t">Akzentfarbe</div><div class="s">Farbe für Hervorhebungen und Markierungen</div></div>
         <div style=${{ display: 'flex', gap: '8px' }}>
@@ -156,7 +160,7 @@ function SessionsPanel({ app }) {
             <${Icon} name=${/Android|iPhone|iPad/.test(s.userAgent || '') ? 'smartphone' : 'computer'} cls="s18 muted" />
             <div style=${{ flex: 1, minWidth: 0 }}>
               <div style=${{ fontSize: '13px', fontWeight: 600 }}>${describeUA(s.userAgent)} ${s.current && html`<span class="pill ok">Diese Sitzung</span>`}</div>
-              <div class="xs muted">${s.ip || 'unbekannte IP'} · zuletzt aktiv ${fmtDate(s.lastSeenAt)} · angemeldet ${fmtDateTime(s.createdAt)}</div>
+              <div class="xs muted">${s.ip || 'unbekannte IP'} · zuletzt aktiv ${fmtDateIn(s.lastSeenAt)} · angemeldet ${fmtDateTime(s.createdAt)}</div>
             </div>
             ${!s.current && html`<button type="button" class="btn btn-ghost sm" onClick=${() => revoke(s.id)}>Abmelden</button>`}
           </div>`)}
@@ -228,16 +232,16 @@ function TrashPanel({ app }) {
   const [data, setData] = useState(null);
   const load = () => api('/docs/trash').then(setData).catch(e => app.flash(e.message, null, true));
   useEffect(() => { load(); }, [app.state.docs.length]);
-  if (!data) return null;
+  if (!data) return html`<div class="panel" id="panel-trash"><${PanelHead} title="Papierkorb" /><div class="small muted">Wird geladen …</div></div>`;
   return html`
-    <div class="panel">
+    <div class="panel" id="panel-trash">
       <${PanelHead} title="Papierkorb" desc=${`Gelöschte Dokumente werden nach ${data.retentionDays} Tagen endgültig entfernt.`} />
       ${data.docs.length === 0 ? html`<div class="small muted">Der Papierkorb ist leer.</div>` : html`
         <div class="list-plain">
           ${data.docs.map(d => html`
             <div>
               <${Icon} name="description" cls="s18 muted" />
-              <div style=${{ flex: 1, minWidth: 0 }}><div style=${{ fontSize: '13px', fontWeight: 600 }}>${d.title}</div><div class="xs muted">gelöscht ${fmtDate(d.deleted)}</div></div>
+              <div style=${{ flex: 1, minWidth: 0 }}><div style=${{ fontSize: '13px', fontWeight: 600 }}>${d.title}</div><div class="xs muted">gelöscht ${fmtDateIn(d.deleted)}</div></div>
               <button type="button" class="btn btn-ghost sm" onClick=${() => app.restoreDoc(d.id).then(load)}>Wiederherstellen</button>
               ${app.isAdmin() && html`<button type="button" class="btn btn-danger sm" onClick=${() => app.purgeDoc(d).then(load)}>Endgültig löschen</button>`}
             </div>`)}
@@ -286,10 +290,13 @@ export function SettingsPage({ app }) {
 function UserRow({ app, u, reload }) {
   const me = app.state.user.id === u.id;
   const patch = async body => { try { await api('/admin/users/' + u.id, { method: 'PATCH', body }); app.flash('Benutzer aktualisiert'); } catch (e) { app.flash(e.message, null, true); } reload(); };
-  const resetPw = async () => {
-    const pw = prompt(`Neues vorläufiges Passwort für „${u.username}“ (mind. ${app.state.passwordMinLength} Zeichen). Der Benutzer muss es bei der nächsten Anmeldung ändern; seine Sitzungen und KI-Zugriffstokens werden beendet:`);
-    if (!pw) return;
-    try { await api(`/admin/users/${u.id}/password`, { method: 'POST', body: { password: pw } }); reload(); app.flash('Passwort zurückgesetzt'); } catch (e) { app.flash(e.message, null, true); }
+  // Eigener Dialog statt Browser-Abfrage: Das Passwort wird verdeckt eingegeben
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pw, setPw] = useState('');
+  const [pwShow, setPwShow] = useState(false);
+  const resetPw = async e => {
+    e.preventDefault();
+    try { await api(`/admin/users/${u.id}/password`, { method: 'POST', body: { password: pw } }); setPwOpen(false); setPw(''); reload(); app.flash('Passwort zurückgesetzt'); } catch (x) { app.flash(x.message, null, true); }
   };
   const act = async (path, method, msg, confirmMsg) => {
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -312,7 +319,21 @@ function UserRow({ app, u, reload }) {
         ${u.locked && html`<button type="button" class="btn btn-ghost sm" onClick=${() => patch({ unlock: true })}>Entsperren</button>`}
         ${!me && u.status === 'active' && html`<button type="button" class="btn btn-ghost sm" onClick=${() => patch({ status: 'disabled' })}>Deaktivieren</button>`}
         ${!me && u.status === 'disabled' && html`<button type="button" class="btn btn-ghost sm" onClick=${() => patch({ status: 'active' })}>Aktivieren</button>`}
-        ${!me && html`<button type="button" class="btn btn-ghost sm" onClick=${resetPw}>Passwort</button>`}
+        ${!me && html`<button type="button" class="btn btn-ghost sm" onClick=${() => { setPw(''); setPwShow(false); setPwOpen(true); }}>Passwort</button>`}
+        ${pwOpen && html`<${Overlay} onClose=${() => setPwOpen(false)}>
+          <form class="modal narrow" role="dialog" aria-modal="true" aria-label="Passwort zurücksetzen" onSubmit=${resetPw} style=${{ textAlign: 'left' }}>
+            <div class="modal-head"><h2 class="h2">Passwort für „${u.username}“ zurücksetzen</h2><button type="button" class="ms close-btn" aria-label="Schließen" onClick=${() => setPwOpen(false)}>close</button></div>
+            <p class="desc" style=${{ margin: '0 0 12px' }}>Der Benutzer muss das vorläufige Passwort bei der nächsten Anmeldung ändern. Seine Sitzungen und KI-Zugriffstokens werden beendet.</p>
+            <label class="field" style=${{ maxWidth: 'none' }}><span>Vorläufiges Passwort (mind. ${app.state.passwordMinLength} Zeichen)</span>
+              <input class="input" type=${pwShow ? 'text' : 'password'} value=${pw} onInput=${e => setPw(e.target.value)} autocomplete="new-password" minlength=${app.state.passwordMinLength} maxlength="256" required autofocus />
+            </label>
+            <label class="small muted" style=${{ display: 'flex', gap: '6px', alignItems: 'center', margin: '8px 0 14px' }}><input type="checkbox" checked=${pwShow} onChange=${e => setPwShow(e.target.checked)} />Passwort anzeigen</label>
+            <div class="btn-row" style=${{ justifyContent: 'flex-end' }}>
+              <button type="button" class="btn btn-ghost md" onClick=${() => setPwOpen(false)}>Abbrechen</button>
+              <button type="submit" class="btn btn-primary md">Zurücksetzen</button>
+            </div>
+          </form>
+        </${Overlay}>`}
         ${!me && u.totpEnabled && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/reset-2fa', 'POST', '2FA zurückgesetzt', `2FA für „${u.username}“ zurücksetzen?`)}>2FA zurücksetzen</button>`}
         ${!me && u.sessions > 0 && html`<button type="button" class="btn btn-ghost sm" onClick=${() => act('/sessions', 'DELETE', 'Sitzungen beendet')}>Abmelden</button>`}
         ${u.shares > 0 && html`<button type="button" class="btn btn-ghost sm" title="Alle öffentlichen Links dieses Benutzers widerrufen" onClick=${() => act('/shares', 'DELETE', 'Alle Freigaben widerrufen – Inhalte sind wieder privat', `Alle ${u.shares} öffentlichen Freigaben von „${u.username}“ widerrufen?`)}><span class="ms s15">link_off</span> Privat machen (${u.shares})</button>`}

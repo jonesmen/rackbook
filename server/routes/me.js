@@ -18,6 +18,7 @@ const SETTINGS = {
   wrap: v => typeof v === 'boolean',
   fontSize: v => [13, 14, 16].includes(v),
   accent: v => ['mint', 'blau', 'violett'].includes(v),
+  theme: v => ['system', 'light', 'dark'].includes(v),
   startPage: v => ['dashboard', 'docs'].includes(v),
   sidebarCollapsed: v => typeof v === 'boolean',
   bmOpen: v => typeof v === 'boolean',

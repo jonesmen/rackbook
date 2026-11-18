@@ -3,7 +3,9 @@
 import { html, render, useState, useEffect, useMemo } from '/vendor/preact-htm.js';
 import { md } from './md.js';
 import { hydrate, baseSortClick } from './hydrate.js';
-import { fcol, fmtDate, fmtDateTime, Icon } from './util.js';
+import { fcol, fmtDate, fmtDateTime, Icon, applyTheme } from './util.js';
+
+applyTheme();
 
 function parseHash() {
   const [token = '', doc = ''] = location.hash.replace(/^#/, '').split('/');

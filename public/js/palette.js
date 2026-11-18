@@ -1,6 +1,6 @@
 // Schnellsuche / Befehlspalette (Strg+K): Dokumente, Ordner, Inventar und Befehle
 import { html, Component } from '/vendor/preact-htm.js';
-import { fmtDate } from './util.js';
+import { fmtDate, MOD, Overlay } from './util.js';
 
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ß/g, 'ss');
 // Trefferqualität: Anfang > Wortanfang > enthalten > alle Wörter enthalten
@@ -34,11 +34,11 @@ export class CommandPalette extends Component {
     if (canEdit) {
       cmd('Neues Dokument', 'note_add', () => app.newDocument(), 'neu anlegen erstellen seite');
       if (s.page === 'doc' && s.docId) cmd('Unterseite anlegen', 'subdirectory_arrow_right', () => app.newDocument(null, s.docId), 'neu kind');
-      cmd('Neuer Inventar-Eintrag', 'add_box', () => app.go('inventory', { assetId: 'new' }), 'host server vm container netzwerk gerät');
+      cmd('Neuer Inventar-Eintrag', 'add_box', () => app.go('inventory', { assetId: 'new', newKind: null, newAssetParent: null }), 'host server vm container netzwerk gerät');
     }
     cmd('Dashboard', 'dashboard', () => app.go('dashboard'), 'start übersicht');
     cmd('Dokumente', 'article', () => app.go('docs', { folder: null, tag: null, q: '' }), 'alle liste');
-    cmd('Inventar', 'inventory_2', () => app.go('inventory', { assetId: null }), 'hosts server ip netzwerke');
+    cmd('Inventar', 'inventory_2', () => app.go('inventory', { assetId: null, invTab: 'list' }), 'hosts server ip netzwerke');
     cmd('IP-Belegung', 'lan', () => app.go('inventory', { assetId: null, invTab: 'ips' }), 'ip adressen frei netz vlan');
     if (canEdit) cmd('Vorlagen verwalten', 'library_books', () => app.openTemplatesSettings(), 'template');
     cmd('Benachrichtigungen', 'notifications', () => app.go('notifications'), 'veraltet prüfen');
@@ -99,7 +99,7 @@ export class CommandPalette extends Component {
             })}
             ${!items.length && html`<div class="md-empty pal-none">Nichts gefunden.</div>`}
           </div>
-          <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> auswählen</span><span><kbd>Enter</kbd> öffnen</span><span><kbd>Strg</kbd>+<kbd>K</kbd> jederzeit</span></div>
+          <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> auswählen</span><span><kbd>Enter</kbd> öffnen</span><span><kbd>${MOD}</kbd>+<kbd>K</kbd> jederzeit</span></div>
         </div>
       </div>`;
   }
