@@ -39,6 +39,8 @@ export function housekeeping() {
   // Abgelaufene/widerrufene Freigaben nach 30 Tagen endgültig entfernen
   db.prepare('DELETE FROM shares WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR (expires_at IS NOT NULL AND expires_at < ?)').run(now - 30 * 86400000, now - 30 * 86400000);
   // Nicht mehr verwendete Dateien und synchronisierte Blöcke
+  // Verknüpfungen auf endgültig gelöschte Dokumente lösen
+  db.prepare('UPDATE assets SET doc_id = NULL WHERE doc_id IS NOT NULL AND doc_id NOT IN (SELECT id FROM documents)').run();
   cleanupFiles();
   sweepOrphanFiles();
   cleanupSynced();

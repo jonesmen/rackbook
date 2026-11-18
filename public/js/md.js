@@ -517,6 +517,7 @@ export function assetCard(id, ctx) {
     ['System', d.os && esc(d.os)], ['Hardware', d.hardware && esc(d.hardware)], ['Standort', d.location && esc(d.location)], ['Ports', d.ports && esc(d.ports)],
     ['URL', d.url && /^https?:\/\//i.test(d.url) && `<a href="${esc(d.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(d.url.replace(/^https?:\/\//, ''))}</a>`],
     ['Läuft auf', a.parentName && esc(a.parentName)],
+    ...(Array.isArray(d.custom) ? d.custom.map(c => [esc(c.label), esc(c.value)]) : []),
   ].filter(([, v]) => v);
   const head = `<span class="ms md-asset-i">${ASSET_ICONS[a.kind] || 'inventory_2'}</span><span class="md-asset-n">${esc(a.name)}</span><span class="md-asset-k">${esc(ASSET_KINDS[a.kind] || a.kind)}</span><span class="md-status c-${st[1]}">${st[0]}</span>`;
   return `<div class="md-asset">${ctx.assetLinks === false ? `<div class="md-asset-h">${head}</div>` : `<a class="md-asset-h" href="/inventory/${esc(encodeURIComponent(a.id))}">${head}</a>`}${d.description ? `<div class="md-asset-d">${esc(d.description)}</div>` : ''}${rows.length ? `<dl class="md-asset-f">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}</div>`;

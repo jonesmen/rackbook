@@ -200,6 +200,15 @@ function mayChange(user, t) {
   return user.role === 'admin' || t.createdById === user.id;
 }
 
+export function createTemplate(b, userId) {
+  const t = input(b, false);
+  const id = 'tpl_' + randomToken(9);
+  const now = Date.now();
+  db.prepare('INSERT INTO templates (id, name, description, icon, title, tags, content, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, t.name, t.description, t.icon, t.title, t.tags, t.content, userId, now, now);
+  return getTemplate(id);
+}
+
 export const templateApi = Router();
 const editor = requireRole('editor');
 
@@ -216,13 +225,9 @@ templateApi.post('/', editor, (req, res) => {
     b.content = b.content ?? d.content;
     b.name = b.name || d.title;
   }
-  const t = input(b, false);
-  const id = 'tpl_' + randomToken(9);
-  const now = Date.now();
-  db.prepare('INSERT INTO templates (id, name, description, icon, title, tags, content, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(id, t.name, t.description, t.icon, t.title, t.tags, t.content, req.user.id, now, now);
-  audit(req, 'template.created', id, { name: t.name });
-  res.status(201).json({ template: getTemplate(id) });
+  const tpl = createTemplate(b, req.user.id);
+  audit(req, 'template.created', tpl.id, { name: tpl.name });
+  res.status(201).json({ template: tpl });
 });
 
 templateApi.put('/:id', editor, (req, res) => {
