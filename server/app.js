@@ -139,7 +139,7 @@ export function createApp() {
   app.use(express.static(publicDir, {
     index: false,
     setHeaders(res, path) {
-      res.setHeader('Cache-Control', /\/(fonts|vendor)\/(?!excalidraw\/app|katex|mermaid)/.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      res.setHeader('Cache-Control', /\/(fonts|vendor)\/(?!excalidraw\/app|katex|mermaid|hljs)/.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache');
       // Der Excalidraw-Editor läuft eingebettet (iframe) und braucht WebAssembly/Worker für den SVG-Export.
       if (/[\\/]mermaid-frame\.html$/.test(path)) {
         res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'");

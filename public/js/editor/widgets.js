@@ -1,6 +1,6 @@
 // Spezialblöcke des Editors (Code, Tabelle, Medien, Einbettungen, Diagramme, Kanban, Datenbank …)
 import { html, Component } from '/vendor/preact-htm.js';
-import { embedInfo, EMBED_PROVIDERS, fmtSize, kanbanData, baseData, BASE_TYPES, STATUS_COLORS, bid } from '../md.js';
+import { embedInfo, EMBED_PROVIDERS, fmtSize, kanbanData, baseData, BASE_TYPES, STATUS_COLORS, bid, IMG_WIDTHS } from '../md.js';
 import { renderTex, renderMermaidInto } from '../hydrate.js';
 
 const LANGS = ['', 'bash', 'shell', 'powershell', 'yaml', 'json', 'ini', 'toml', 'dockerfile', 'nginx', 'apache', 'sql', 'python', 'javascript', 'typescript', 'go', 'rust', 'java', 'c', 'cpp', 'csharp', 'php', 'html', 'css', 'xml', 'markdown', 'diff', 'text'];
@@ -177,8 +177,16 @@ export class MediaW extends Component {
       <button type="button" class="w-icon" title="Entfernen" onClick=${() => ed.remove(b)}><span class="ms">delete</span></button>
     </div>`;
     if (b.type === 'image') {
-      return html`<figure class="md-figure w-media">${tools}<img class="md-img" src=${src} alt=${b.alt || ''} />
-        <input class="w-caption" placeholder="Bildunterschrift hinzufügen …" value=${b.caption || ''} onInput=${e => ed.mutate(() => { b.caption = e.target.value; }, 'typing')} /></figure>`;
+      const w = IMG_WIDTHS.includes(Number(b.width)) ? Number(b.width) : 100;
+      return html`<figure class=${'md-figure w-media' + (w < 100 ? ' w-' + w : '')}>
+        <div class="w-float">
+          ${[25, 50, 75, 100].map(n => html`<button type="button" class=${'w-icon txt' + (w === n ? ' on' : '')} title=${`Breite ${n} %`} onClick=${() => ed.mutate(() => { if (n === 100) delete b.width; else b.width = n; })}>${n}</button>`)}
+          <button type="button" class="w-icon" title="Ersetzen" onClick=${() => ed.mutate(() => { b.src = ''; })}><span class="ms">swap_horiz</span></button>
+          <button type="button" class="w-icon" title="Entfernen" onClick=${() => ed.remove(b)}><span class="ms">delete</span></button>
+        </div>
+        <img class="md-img" src=${src} alt=${b.alt || ''} />
+        <input class="w-caption" placeholder="Bildunterschrift hinzufügen …" value=${b.caption || ''} onInput=${e => ed.mutate(() => { b.caption = e.target.value; }, 'typing')} />
+        <input class="w-caption alt" placeholder="Alternativtext (beschreibt das Bild für Screenreader und die Suche)" value=${b.alt || ''} maxlength="200" onInput=${e => ed.mutate(() => { b.alt = e.target.value.replace(/[[\]]/g, ''); }, 'typing')} /></figure>`;
     }
     if (b.type === 'video') return html`<figure class="md-figure w-media">${tools}<video class="md-video" src=${src} controls preload="metadata"></video></figure>`;
     if (b.type === 'audio') return html`<div class="md-audio w-media">${tools}<div class="md-audio-t"><span class="ms">music_note</span>${b.name || 'Audio'}</div><audio src=${src} controls preload="metadata"></audio></div>`;
@@ -189,9 +197,11 @@ export class MediaW extends Component {
     const { b, ed } = this.props;
     const u = this.state.url.trim();
     if (!/^https:\/\//i.test(u)) return;
-    ed.mutate(() => { b.src = u; if (b.type !== 'image') b.name = decodeURIComponent(u.split('/').pop().split('?')[0] || '') || u; });
+    ed.mutate(() => { b.src = u; if (b.type !== 'image') b.name = safeDecode(u.split('/').pop().split('?')[0] || '') || u; });
   }
 }
+
+const safeDecode = s => { try { return decodeURIComponent(s); } catch { return s; } };
 
 // ---------- Einbettungen ----------
 export class EmbedW extends Component {

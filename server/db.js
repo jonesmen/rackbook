@@ -219,6 +219,10 @@ const MIGRATIONS = [
   CREATE INDEX assets_parent ON assets(parent_id);
   CREATE INDEX assets_kind ON assets(kind);
   `,
+  // 8: manuelle Reihenfolge von Seiten (0 = noch nicht sortiert → alphabetisch)
+  `
+  ALTER TABLE documents ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

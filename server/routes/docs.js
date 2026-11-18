@@ -54,7 +54,7 @@ const DOC_SELECT = `SELECT d.*, cu.display_name AS created_by_name, uu.display_n
 export function toDto(d) {
   return {
     id: d.id, title: d.title, folder: d.folder_id, parent: d.parent_id ?? null, tags: JSON.parse(d.tags || '[]'), content: d.content,
-    pinned: !!d.pinned, bookmarked: !!d.bookmarked, version: d.version,
+    pinned: !!d.pinned, bookmarked: !!d.bookmarked, version: d.version, sort: d.sort || 0,
     created: d.created_at, createdBy: d.created_by_name ?? null, createdById: d.created_by ?? null,
     updated: d.updated_at, updatedBy: d.updated_by_name ?? null, updatedVia: d.updated_via || 'web',
     reviewed: d.reviewed_at ?? null, deleted: d.deleted_at ?? null,
@@ -211,6 +211,44 @@ r.put('/docs/:id', editor, (req, res) => {
   });
   if (snapshotted) audit(req, 'doc.updated', doc.id, { title: doc.title, version: doc.version });
   res.json({ doc: toDto(doc) });
+});
+
+// Seite verschieben und/oder einsortieren (Ziehen im Seitenbaum).
+// parent: neue Elternseite ('' = oberste Ebene), folder: Zielordner, before/after: Nachbarseite für die Reihenfolge
+r.post('/docs/:id/move', editor, (req, res) => {
+  const b = req.body || {};
+  tx(() => {
+    const d = loadDoc(req, req.params.id);
+    let parent = d.parent_id ?? null, folder = d.folder_id;
+    if (b.parent !== undefined) {
+      const p = checkDocParent(d.id, b.parent);
+      parent = p.parent;
+      if (p.folder) folder = p.folder;
+    }
+    if (!parent && b.folder !== undefined) {
+      if (!folderExists(b.folder)) throw new HttpError(400, 'Ordner existiert nicht.');
+      folder = String(b.folder);
+    }
+    if (parent !== (d.parent_id ?? null) || folder !== d.folder_id) {
+      db.prepare('UPDATE documents SET parent_id = ?, folder_id = ? WHERE id = ?').run(parent, folder, d.id);
+      if (folder !== d.folder_id) moveDocSubtree(d.id, folder);
+    }
+    // Reihenfolge unter den Geschwistern neu vergeben
+    const sibs = (parent
+      ? db.prepare('SELECT id, title, sort FROM documents WHERE parent_id = ? AND deleted_at IS NULL').all(parent)
+      : db.prepare('SELECT id, title, sort FROM documents WHERE folder_id = ? AND deleted_at IS NULL AND (parent_id IS NULL OR parent_id NOT IN (SELECT id FROM documents WHERE deleted_at IS NULL))').all(folder))
+      .sort((x, y) => (x.sort || 1e9) - (y.sort || 1e9) || x.title.localeCompare(y.title, 'de')).map(x => x.id).filter(id => id !== d.id);
+    const ref = b.before !== undefined ? String(b.before) : b.after !== undefined ? String(b.after) : null;
+    const at = ref !== null ? sibs.indexOf(ref) : -1;
+    if (at < 0) sibs.push(d.id); else sibs.splice(b.before !== undefined ? at : at + 1, 0, d.id);
+    // Nur wenn ausdrücklich einsortiert wurde oder die Gruppe schon eine feste Reihenfolge hat
+    if (ref !== null || db.prepare('SELECT 1 FROM documents WHERE id IN (' + sibs.map(() => '?').join(',') + ') AND sort > 0').get(...sibs)) {
+      sibs.forEach((id, i) => db.prepare('UPDATE documents SET sort = ? WHERE id = ?').run(i + 1, id));
+    } else db.prepare('UPDATE documents SET sort = 0 WHERE id = ?').run(d.id);
+    audit(req, 'doc.moved', d.id, { title: d.title, folder, parent });
+  });
+  const rows = db.prepare(`${DOC_SELECT} WHERE d.deleted_at IS NULL ORDER BY d.updated_at DESC`).all(req.user.id);
+  res.json({ docs: rows.map(toDto) });
 });
 
 r.post('/docs/:id/pin', editor, (req, res) => {

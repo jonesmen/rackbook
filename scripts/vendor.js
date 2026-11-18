@@ -58,4 +58,15 @@ if (process.env.FORCE_VENDOR || !existsSync(out) || statSync(out).mtimeMs < Math
   });
   console.log('vendor: Excalidraw gebaut');
 }
+// Syntax-Hervorhebung für Code-Blöcke (gängige Sprachen, als ES-Modul – wird nur bei Bedarf geladen)
+const hlOut = join(root, 'public/vendor/hljs/hljs.js');
+const hlPkg = join(nm, 'highlight.js/package.json');
+if (process.env.FORCE_VENDOR || !existsSync(hlOut) || statSync(hlOut).mtimeMs < statSync(hlPkg).mtimeMs) {
+  const { build } = await import('esbuild');
+  await build({
+    stdin: { contents: "import hljs from 'highlight.js/lib/common'; export default hljs;", resolveDir: root },
+    outfile: hlOut, bundle: true, minify: true, format: 'esm', target: 'es2020', logLevel: 'warning', legalComments: 'none',
+  });
+  console.log('vendor: Syntax-Hervorhebung gebaut');
+}
 console.log(`vendor: ${files.length} Dateien und ${fonts} Excalidraw-Schriften kopiert`);

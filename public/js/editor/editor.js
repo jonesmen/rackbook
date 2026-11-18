@@ -2,7 +2,7 @@
 // Gespeichert wird weiterhin Markdown (siehe md.js) – so bleiben Suche, Export und MCP unverändert nutzbar.
 import { html, Component } from '/vendor/preact-htm.js';
 import { parse, serialize, bid, CALLOUTS, STATUS_COLORS, parseStatus, fmtDay, esc, ASSET_ICONS, listNumbers } from '../md.js';
-import { domToMd, toEditHtml, setCaret, caretOffset, caretAtStart, caretAtEnd, caretOnFirstLine, caretOnLastLine, caretClientRect, splitAtCaret, textLen } from './dom.js';
+import { domToMd, toEditHtml, looksRich, htmlToMd, setCaret, caretOffset, caretAtStart, caretAtEnd, caretOnFirstLine, caretOnLastLine, caretClientRect, splitAtCaret, textLen } from './dom.js';
 import { GROUPS, filterItems } from './slash.js';
 import { EMOJI_GROUPS, searchEmoji } from './emoji.js';
 import { hydrate } from '../hydrate.js';
@@ -393,6 +393,30 @@ export class BlockEditor extends Component {
       this.mutate(() => { const { arr, idx } = locate(this.root(b), b.id); arr.splice(idx, 1, { id: bid(), type: 'hr' }, newText()); this.focusLater(arr[idx + 1].id, 0); });
     }
   }
+  // Suchen & Ersetzen über alle Textinhalte (Absätze, Listen, Überschriften, Code, Tabellen). Liefert die Anzahl der Treffer;
+  // ohne `replace` wird nur gezählt.
+  findReplace(find, replace, caseSensitive) {
+    if (!find) return 0;
+    const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+    for (const tb of this.tbs.values()) tb.read();
+    let n = 0;
+    const apply = (obj, key) => {
+      const v = obj[key];
+      if (typeof v !== 'string' || !v) return;
+      const hits = v.match(re);
+      if (!hits) return;
+      n += hits.length;
+      if (replace !== undefined) obj[key] = v.replace(re, () => replace);
+    };
+    const walk = list => list.forEach(b => {
+      if (b.type === 'table') (b.rows || []).forEach(r => r.forEach((c, i) => apply(r, i)));
+      else if (!['image', 'video', 'audio', 'pdf', 'file', 'embed', 'drawio', 'excalidraw', 'synced', 'asset', 'kanban', 'base'].includes(b.type)) { apply(b, 'text'); if (b.type === 'callout') apply(b, 'title'); }
+      childLists(b).forEach(walk);
+    });
+    if (replace === undefined) { walk(this.doc); return n; }
+    this.mutate(() => walk(this.doc));
+    return n;
+  }
   blockById(id) {
     for (const list of [this.doc, ...Object.values(this.synced).map(s => s.tree)]) { const r = locate(list, id); if (r) return r.b; }
     return null;
@@ -690,10 +714,20 @@ export class BlockEditor extends Component {
       this.uploadFiles(files, b);
       return;
     }
-    const text = cd.getData('text/plain');
+    let text = cd.getData('text/plain');
+    // Formatierter Inhalt (Webseiten, Textverarbeitung): Struktur als Markdown übernehmen
+    const rich = cd.getData('text/html');
+    let fromHtml = false;
+    if (rich && looksRich(rich)) { const mdText = htmlToMd(rich); if (mdText) { text = mdText; fromHtml = true; } }
     if (!text) { e.preventDefault(); return; }
     e.preventDefault();
-    if (!/\n/.test(text.trim())) { document.execCommand('insertText', false, text.replace(/\r/g, '')); return; }
+    if (!/\n/.test(text.trim())) {
+      // Einzeiler: an der Schreibmarke einfügen (mit Formatierung, wenn sie aus HTML stammt)
+      if (fromHtml && !/^(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|---$)/.test(text)) document.execCommand('insertHTML', false, toEditHtml(text));
+      else if (fromHtml) { tb.read(); const one = parse(text); const l1 = locate(this.root(b), b.id); this.mutate(() => { if (b.type === 'p' && !b.text) l1.arr.splice(l1.idx, 1, ...one); else l1.arr.splice(l1.idx + 1, 0, ...one); }); if (one.length && isText(one[one.length - 1])) this.focusLater(one[one.length - 1].id, 'end'); }
+      else document.execCommand('insertText', false, text.replace(/\r/g, ''));
+      return;
+    }
     tb.read();
     const blocks = parse(text);
     if (!blocks.length) return;

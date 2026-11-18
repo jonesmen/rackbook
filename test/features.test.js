@@ -98,3 +98,24 @@ test('Tags umbenennen, zusammenführen, entfernen', async () => {
   assert.equal(r.data.documents, 2);
   assert.deepEqual((await api('GET', '/docs')).data.docs.find(d => d.id === ids.a).tags, []);
 });
+
+test('Seiten verschieben und einsortieren', async () => {
+  const mk = async (title, extra = {}) => (await api('POST', '/docs', { title, folder: ids.f1, content: 'x', tags: '', ...extra })).data.doc.id;
+  const x = await mk('Xanten'), y = await mk('Ypern'), z = await mk('Zug');
+  const order = async parent => (await api('GET', '/docs')).data.docs.filter(d => [x, y, z].includes(d.id) && (d.parent || null) === parent).sort((a, b) => ((a.sort || 1e9) - (b.sort || 1e9)) || a.title.localeCompare(b.title, 'de')).map(d => d.title);
+  assert.deepEqual(await order(null), ['Xanten', 'Ypern', 'Zug']);
+  // Zug vor Xanten einsortieren
+  let r = await api('POST', `/docs/${z}/move`, { parent: '', folder: ids.f1, before: x });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await order(null), ['Zug', 'Xanten', 'Ypern']);
+  // Xanten hinter Ypern
+  await api('POST', `/docs/${x}/move`, { parent: '', folder: ids.f1, after: y });
+  assert.deepEqual(await order(null), ['Zug', 'Ypern', 'Xanten']);
+  // Ypern als Unterseite von Zug, dann in einen anderen Ordner ziehen
+  r = await api('POST', `/docs/${y}/move`, { parent: z });
+  assert.equal(r.data.docs.find(d => d.id === y).parent, z);
+  assert.equal((await api('POST', `/docs/${z}/move`, { parent: y })).status, 400, 'kein Kreis');
+  r = await api('POST', `/docs/${z}/move`, { parent: '', folder: ids.f2 });
+  assert.deepEqual([r.data.docs.find(d => d.id === z).folder, r.data.docs.find(d => d.id === y).folder], [ids.f2, ids.f2], 'Unterseite zieht mit um');
+  assert.equal((await api('POST', `/docs/${z}/move`, { parent: '', folder: 'gibt-es-nicht' })).status, 400);
+});
