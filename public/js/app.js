@@ -1,7 +1,7 @@
 import { html, render, Component } from '/vendor/preact-htm.js';
 import { api, setCsrf, setUnauthorizedHandler, ApiError } from './api.js';
 import { md, plain, excerpt } from './md.js';
-import { DocEditor, MdView } from './doc-editor.js';
+import { DocEditor, MdView, DiffView } from './doc-editor.js';
 import { CommandPalette } from './palette.js';
 import { TemplatePicker, applyPlaceholders } from './templates-views.js';
 import { InventoryPage } from './inventory.js';
@@ -327,6 +327,41 @@ class App extends Component {
     try { const r = await api('/me', { method: 'PATCH', body }); this.setState({ user: r.user }); if (msg) this.flash(msg); } catch (e) { this.fail(e); }
   }
 
+  // Zuletzt angesehene Dokumente (nur auf diesem Gerät gemerkt)
+  viewedIds() { try { const v = JSON.parse(localStorage.getItem('rackbook.viewed') || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; } catch { return []; } }
+  noteViewed(id) { try { localStorage.setItem('rackbook.viewed', JSON.stringify([id, ...this.viewedIds().filter(x => x !== id)].slice(0, 15))); } catch { /* egal */ } }
+  recentlyViewed() { return this.viewedIds().map(id => this.doc(id)).filter(Boolean); }
+  // Verweise auf Seiten oder Inventar-Einträge, die es nicht (mehr) gibt
+  brokenLinks() {
+    const out = [];
+    const assetIds = new Set((this.state.assets || []).map(a => a.id));
+    for (const d of this.state.docs) {
+      const missing = new Set();
+      for (const m of d.content.matchAll(/\]\(\/doc\/([A-Za-z0-9_-]+)\)/g)) if (!this.doc(m[1])) missing.add('Seite ' + m[1]);
+      for (const m of d.content.matchAll(/^::asset\s+\{\s*"id"\s*:\s*"([A-Za-z0-9_-]+)"/gm)) if (!assetIds.has(m[1])) missing.add('Inventar-Eintrag ' + m[1]);
+      if (missing.size) out.push({ d, missing: [...missing] });
+    }
+    return out;
+  }
+  async duplicateDoc(d) {
+    try {
+      const r = await api('/docs', { method: 'POST', body: { title: d.title + ' (Kopie)', folder: d.folder, parent: d.parent || '', tags: d.tags, content: d.content } });
+      this.upsertDoc(r.doc);
+      this.flash('Kopie angelegt');
+      this.go('doc', { docId: r.doc.id });
+    } catch (e) { this.fail(e); }
+  }
+  // Mehrere Dokumente auf einmal (Auswahl in der Dokumentliste)
+  async bulk(action, extra = {}) {
+    const ids = Object.keys(this.state.picked || {});
+    if (!ids.length) return;
+    try {
+      const r = await api('/docs/bulk', { method: 'POST', body: { ids, action, ...extra } });
+      this.setState({ docs: r.docs, picked: {} });
+      this.flash({ move: 'Verschoben', tag: 'Tag ergänzt', untag: 'Tag entfernt', trash: 'In den Papierkorb verschoben' }[action] + ` (${ids.length})`);
+    } catch (e) { this.fail(e); }
+  }
+
   // ---------- Navigation ----------
   go(page, extra, replace, force) {
     // Beim Verlassen des Editors erst speichern
@@ -343,6 +378,7 @@ class App extends Component {
       if (!confirm('Die Änderungen an diesem Inventar-Eintrag sind noch nicht gespeichert. Verwerfen?')) return false;
     }
     const next = Object.assign({ page, menuId: null, filterOpen: false, userMenu: false, mobileNav: false }, extra || {});
+    if (page === 'doc' && next.docId) this.noteViewed(next.docId);
     // Suchtext gehört nur zur Suche
     if (page !== 'search' && !(extra && 'sq' in extra)) next.sq = '';
     this.setState(next, () => {
@@ -819,15 +855,17 @@ class App extends Component {
         </div>
         <div class="grid-2">
           <div class="section">
-            <h2 class="h2">Zuletzt bearbeitet</h2>
+            <div class="row-between"><h2 class="h2">${s.dashRecent === 'viewed' ? 'Zuletzt angesehen' : 'Zuletzt bearbeitet'}</h2>
+              <div class="seg sm"><button type="button" class=${s.dashRecent !== 'viewed' ? 'on' : ''} onClick=${() => this.setState({ dashRecent: 'edited' })}>Bearbeitet</button><button type="button" class=${s.dashRecent === 'viewed' ? 'on' : ''} onClick=${() => this.setState({ dashRecent: 'viewed' })}>Angesehen</button></div></div>
             <div class="card list">
-              ${recent.map(r => html`
+              ${(s.dashRecent === 'viewed' ? this.recentlyViewed().slice(0, 5).map(d => this.row(d)) : recent).map(r => html`
                 <button type="button" class="list-row" onClick=${() => this.go('doc', { docId: r.d.id })}>
                   <div class="ficon s30" style=${r.c}><span class="ms">description</span></div>
-                  <div style=${{ flex: 1, minWidth: 0 }}><div class="t">${r.d.title}</div><div class="m">${r.f.name}</div></div>
+                  <div style=${{ flex: 1, minWidth: 0 }}><div class="t">${r.d.title}</div><div class="m">${r.f.name}${r.d.updatedBy ? ` · ${r.d.updatedBy}${r.d.updatedVia === 'mcp' ? ' (KI)' : ''}` : ''}</div></div>
                   <div class="d">${r.updatedLabel}</div>
                 </button>`)}
-              ${recent.length === 0 && html`<div class="empty-note">Noch keine Dokumente. ${canEdit ? 'Lege mit „Neues Dokument“ das erste an.' : ''}</div>`}
+              ${s.dashRecent === 'viewed' && this.recentlyViewed().length === 0 && html`<div class="empty-note">Auf diesem Gerät wurden noch keine Dokumente geöffnet.</div>`}
+              ${s.dashRecent !== 'viewed' && recent.length === 0 && html`<div class="empty-note">Noch keine Dokumente. ${canEdit ? 'Lege mit „Neues Dokument“ das erste an.' : ''}</div>`}
             </div>
           </div>
           <div class="section">
@@ -867,6 +905,8 @@ class App extends Component {
     const folders = s.folder || s.showAllFolders ? levelFolders : levelFolders.slice(0, 4);
     const chain = s.folder ? this.folderChain(s.folder) : [];
     const canEdit = this.canEdit();
+    const picked = s.picked || {};
+    const pickedN = Object.keys(picked).filter(id => this.doc(id)).length;
     return html`
       <div class="page g24" data-screen-label="Dokumente">
         <div class="page-head">
@@ -875,6 +915,7 @@ class App extends Component {
               ${chain.slice(0, -1).map(f => html`<span class="ms">chevron_right</span><button type="button" class="c" onClick=${() => this.go('docs', { folder: f.id, tag: null, q: '' })}>${f.name}</button>`)}
               <span class="ms">chevron_right</span><span class="cur">${title}</span></div>`}
             <div style=${{ display: 'flex', alignItems: 'center', gap: '10px' }}><h1 class="h1">${title}</h1>
+              ${s.folder && html`<a class="sq-btn" title="Ordner als ZIP herunterladen (Markdown-Dateien mit Anhängen)" href=${'/api/export/zip?folder=' + encodeURIComponent(s.folder)} download><span class="ms">folder_zip</span></a>`}
               ${s.folder && this.canShareItem(this.F(s.folder)) && html`<button type="button" class="sq-btn" title="Ordner teilen per Link" onClick=${() => this.openShare('folder', this.F(s.folder))}><span class="ms">share</span></button>`}</div>
           </div>
           ${this.headIcons()}
@@ -920,12 +961,24 @@ class App extends Component {
         <div class="section g14">
           <h2 class="h2">${s.folder || s.tag || ql ? `${listed.length} ${listed.length === 1 ? 'Dokument' : 'Dokumente'}` : 'Zuletzt bearbeitet'}</h2>
           <div class="card">
-            <div class="dtable-head"><span>NAME</span><span>UMFANG</span><span>ZULETZT GEÄNDERT</span><span style=${{ textAlign: 'right' }}>AKTION</span></div>
+            ${canEdit && pickedN > 0 && html`<div class="bulk-bar">
+              <b>${pickedN} ausgewählt</b>
+              <select class="input sm" aria-label="Verschieben nach" value="" onChange=${e => { const f = e.target.value; e.target.value = ''; if (f) this.bulk('move', { folder: f }); }}>
+                <option value="">Verschieben nach …</option>${this.folderTreeList().map(({ f, depth }) => html`<option value=${f.id}>${'   '.repeat(depth)}${f.name}</option>`)}
+              </select>
+              <button type="button" class="btn btn-ghost sm" onClick=${() => { const t = prompt('Tag, der allen ausgewählten Dokumenten hinzugefügt wird:'); if (t && t.trim()) this.bulk('tag', { tag: t }); }}><span class="ms">sell</span>Tag hinzufügen</button>
+              <button type="button" class="btn btn-ghost sm" onClick=${() => { const t = prompt('Tag, der bei allen ausgewählten Dokumenten entfernt wird:'); if (t && t.trim()) this.bulk('untag', { tag: t }); }}><span class="ms">label_off</span>Tag entfernen</button>
+              <button type="button" class="btn btn-danger sm" onClick=${() => { if (confirm(`${pickedN} Dokument(e) samt Unterseiten in den Papierkorb verschieben?`)) this.bulk('trash'); }}><span class="ms">delete</span>Löschen</button>
+              <span class="grow"></span>
+              <button type="button" class="link-acc" onClick=${() => this.setState({ picked: {} })}>Auswahl aufheben</button>
+            </div>`}
+            <div class=${'dtable-head' + (canEdit ? ' pick' : '')}>${canEdit && html`<input type="checkbox" aria-label="Alle auswählen" checked=${listed.length > 0 && listed.every(d => picked[d.id])} onChange=${e => this.setState({ picked: e.target.checked ? Object.fromEntries(listed.map(d => [d.id, true])) : {} })} />`}<span>NAME</span><span>UMFANG</span><span>ZULETZT GEÄNDERT</span><span style=${{ textAlign: 'right' }}>AKTION</span></div>
             ${listed.map(d => {
               const r = this.row(d);
               const open = s.menuId === d.id;
               return html`
-                <div class="dtable-row" key=${d.id}>
+                <div class=${'dtable-row' + (canEdit ? ' pick' : '') + (picked[d.id] ? ' picked' : '')} key=${d.id}>
+                  ${canEdit && html`<input type="checkbox" aria-label=${'Auswählen: ' + d.title} checked=${!!picked[d.id]} onChange=${e => { const p = { ...picked }; if (e.target.checked) p[d.id] = true; else delete p[d.id]; this.setState({ picked: p }); }} />`}
                   <button type="button" class="name" onClick=${() => this.go('doc', { docId: d.id })}>
                     <div class="ficon" style=${r.c}><span class="ms s18">description</span></div>
                     <div style=${{ minWidth: 0 }}><div class="fn">${r.fileName}</div><div class="fm">${plainFolder ? r.f.name : r.path}${r.kids ? ` · ${r.kids} ${r.kids === 1 ? 'Unterseite' : 'Unterseiten'}` : ''}</div></div>
@@ -941,6 +994,7 @@ class App extends Component {
                         ${canEdit && html`<button type="button" class="menu-item" onClick=${() => this.newDocument(d.folder, d.id)}><span class="ms">note_add</span>Unterseite anlegen</button>`}
                         <button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); this.toggleBookmark(d); }}><span class="ms">bookmark</span>${d.bookmarked ? 'Lesezeichen entfernen' : 'Lesezeichen setzen'}</button>
                         <button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); download(fileName(d), docMd(d)); }}><span class="ms">download</span>Als .md herunterladen</button>
+                        ${canEdit && html`<button type="button" class="menu-item" onClick=${() => { this.setState({ menuId: null }); this.duplicateDoc(d); }}><span class="ms">content_copy</span>Duplizieren</button>`}
                         ${canEdit && html`<div class="menu-sep"></div><button type="button" class="menu-item danger" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span>Löschen</button>`}
                       </div>`}
                   </div>
@@ -1018,6 +1072,7 @@ class App extends Component {
             <button type="button" class="sq-btn" title="Als .md herunterladen" onClick=${() => download(fileName(d), docMd(d))}><span class="ms">download</span></button>
             <button type="button" class="sq-btn" title="Drucken / als PDF speichern" onClick=${() => window.print()}><span class="ms">print</span></button>
             ${canEdit && html`<button type="button" class="sq-btn" title="Unterseite anlegen" onClick=${() => this.newDocument(d.folder, d.id)}><span class="ms">note_add</span></button>`}
+            ${canEdit && html`<button type="button" class="sq-btn" title="Duplizieren" onClick=${() => this.duplicateDoc(d)}><span class="ms">content_copy</span></button>`}
             ${canEdit && html`<button type="button" class="sq-btn" title="Als Vorlage speichern" onClick=${() => this.saveAsTemplate(d)}><span class="ms">library_add</span></button>`}
             ${canEdit && html`<button type="button" class="sq-btn" title="Löschen" onClick=${() => this.confirmRemove(d)}><span class="ms">delete</span></button>`}
           </div>
@@ -1139,9 +1194,10 @@ class App extends Component {
   // ---------- Benachrichtigungen ----------
   renderNotifications(staleDocs, touched) {
     const s = this.state, now = Date.now();
+    const broken = this.brokenLinks();
     return html`
       <div class="page g20 narrow" data-screen-label="Benachrichtigungen">
-        <div><h1 class="h1">Benachrichtigungen</h1><p class="sub">Dokumente, die seit über ${s.meta.staleDays} Tagen nicht aktualisiert wurden.</p></div>
+        <div><h1 class="h1">Benachrichtigungen</h1><p class="sub">Dokumente, die seit über ${s.meta.staleDays} Tagen nicht aktualisiert wurden, und Verweise ins Leere.</p></div>
         <div class="card list">
           ${staleDocs.map(d => html`
             <div class="notif-row">
@@ -1155,6 +1211,19 @@ class App extends Component {
             </div>`)}
           ${staleDocs.length === 0 && html`<div class="empty-big"><div class="t">Alles aktuell</div><div class="s">Keine Dokumente warten auf Überprüfung.</div></div>`}
         </div>
+        ${broken.length > 0 && html`
+          <div><h2 class="h2">Verweise ins Leere (${broken.length})</h2><p class="sub">Diese Dokumente verlinken Seiten oder Inventar-Einträge, die es nicht mehr gibt.</p></div>
+          <div class="card list">
+            ${broken.map(({ d, missing }) => html`
+              <div class="notif-row">
+                <div class="ficon s32 notif-icon"><span class="ms">link_off</span></div>
+                <div style=${{ flex: '1 1 260px', minWidth: 0 }}>
+                  <div class="t">${d.title}</div>
+                  <div class="m">${this.F(d.folder).name} • ${missing.length === 1 ? 'fehlt' : 'fehlen'}: <span class="mono">${missing.join(', ')}</span></div>
+                </div>
+                <button type="button" class="btn btn-ghost sm" onClick=${() => this.go('doc', { docId: d.id })}>Öffnen</button>
+              </div>`)}
+          </div>`}
       </div>`;
   }
 
@@ -1190,9 +1259,14 @@ class App extends Component {
             <div class="rev-preview">
               <div class="row-between" style=${{ marginBottom: '12px' }}>
                 <div style=${{ fontWeight: 600 }}>${sel.title}</div>
-                ${sel.id !== null && this.canEdit() && html`<button type="button" class="btn btn-primary sm" onClick=${() => this.restoreRevision(d, sel)}><span class="ms s16">restore</span>Diese Version wiederherstellen</button>`}
+                <div class="btn-row">
+                  ${sel.id !== null && html`<div class="seg sm"><button type="button" class=${s.rev.mode !== 'diff' ? 'on' : ''} onClick=${() => this.setState({ rev: { ...s.rev, mode: 'view' } })}>Vorschau</button><button type="button" class=${s.rev.mode === 'diff' ? 'on' : ''} onClick=${() => this.setState({ rev: { ...s.rev, mode: 'diff' } })}>Änderungen</button></div>`}
+                  ${sel.id !== null && this.canEdit() && html`<button type="button" class="btn btn-primary sm" onClick=${() => this.restoreRevision(d, sel)}><span class="ms s16">restore</span>Diese Version wiederherstellen</button>`}
+                </div>
               </div>
-              <${MdView} html=${md(sel.content, this.renderCtx(d.id)).html} />
+              ${sel.id !== null && s.rev.mode === 'diff'
+                ? html`<${DiffView} from=${sel.content} to=${d.content} fromLabel=${'Version ' + sel.version} toLabel=${'Aktuell (Version ' + d.version + ')'} />`
+                : html`<${MdView} html=${md(sel.content, this.renderCtx(d.id)).html} />`}
             </div>
           </div>
         </div>

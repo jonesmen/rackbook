@@ -16,6 +16,7 @@ import { fileApi, serveFile, getEditorSettings, cleanupFiles, sweepOrphanFiles, 
 import { syncedApi, cleanupSynced } from './synced.js';
 import { templateApi } from './templates.js';
 import { assetApi } from './assets.js';
+import { exportApi } from './export.js';
 
 setCspExtra(editorCspExtra);
 
@@ -126,6 +127,7 @@ export function createApp() {
   api.use('/synced', syncedApi);
   api.use('/templates', templateApi);
   api.use('/assets', assetApi);
+  api.use('/export', exportApi);
   api.use('/admin', requireRole('admin'), adminRoutes);
   api.use('/', docRoutes);
   api.use(() => { throw new HttpError(404, 'Nicht gefunden.'); });

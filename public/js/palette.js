@@ -65,8 +65,11 @@ export class CommandPalette extends Component {
     }
     const order = ['Befehle', 'Dokumente', 'Ordner', 'Inventar'];
     const groups = order.map(g => out.filter(x => x.group === g).sort((a, b) => b.sc - a.sc).slice(0, g === 'Dokumente' ? 12 : 8));
-    // Ohne Suchbegriff: zuletzt geänderte Dokumente zuerst, Befehle danach
-    return q ? groups.flat().sort((a, b) => (b.sc - a.sc) || order.indexOf(a.group) - order.indexOf(b.group)) : [...groups[1].slice(0, 8), ...groups[0]];
+    // Ohne Suchbegriff: zuletzt angesehene (auf diesem Gerät), sonst zuletzt geänderte Dokumente zuerst, Befehle danach
+    if (q) return groups.flat().sort((a, b) => (b.sc - a.sc) || order.indexOf(a.group) - order.indexOf(b.group));
+    const viewed = app.recentlyViewed().slice(0, 8).map(d => ({ group: 'Dokumente', viewed: true, label: d.title, icon: 'history', hint: app.folderPath(d.folder), run: () => app.go('doc', { docId: d.id }) }));
+    this.viewedMode = viewed.length > 0;
+    return [...(viewed.length ? viewed : groups[1].slice(0, 8)), ...groups[0]];
   }
   run(it) {
     this.props.onClose();
@@ -92,7 +95,7 @@ export class CommandPalette extends Component {
           </div>
           <div class="pal-list" ref=${this.listRef}>
             ${items.map((it, k) => {
-              const head = it.group !== last ? html`<div class="menu-label pal-group">${(q.trim() || it.group !== 'Dokumente' ? it.group : 'Zuletzt geändert').toUpperCase()}</div>` : null;
+              const head = it.group !== last ? html`<div class="menu-label pal-group">${(q.trim() || it.group !== 'Dokumente' ? it.group : this.viewedMode ? 'Zuletzt angesehen' : 'Zuletzt geändert').toUpperCase()}</div>` : null;
               last = it.group;
               return html`${head}<button type="button" class=${'pal-item' + (k === sel ? ' sel' : '')} onMouseMove=${() => { if (this.state.sel !== k) this.setState({ sel: k }); }} onClick=${() => this.run(it)}>
                 <span class="ms">${it.icon}</span><span class="pal-l">${it.label}</span>${it.hint && html`<span class="pal-h">${it.hint}</span>`}</button>`;
