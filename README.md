@@ -21,7 +21,8 @@ Selbstgehostete Markdown-Dokumentation für Homelab & IT-Infrastruktur – als e
 - Benachrichtigungen für Dokumente, die länger nicht geprüft wurden („Als geprüft markieren“)
 - Versionsverlauf pro Dokument mit Wiederherstellung, Papierkorb mit „Rückgängig“
 - Erkennung gleichzeitiger Bearbeitung (kein stilles Überschreiben)
-- Import von `.md`-Dateien, Export als Markdown oder JSON, automatische vollständige Sicherungen mit Wiederherstellung, Beispieldaten
+- Import von `.md`-Dateien, Export als ZIP (Markdown-Dateien in Ordnerstruktur mit Anhängen), Markdown oder JSON, automatische vollständige Sicherungen mit Wiederherstellung, Beispieldaten
+- Versionsvergleich, Duplizieren, Mehrfachaktionen in der Dokumentliste, Tag-Verwaltung, „Zuletzt angesehen“, Hinweis auf Verweise ins Leere
 
 **Benutzerverwaltung**
 - Der **erste registrierte Benutzer wird Administrator** (Ersteinrichtung im Browser)

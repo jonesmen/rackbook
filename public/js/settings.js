@@ -249,6 +249,36 @@ function TrashPanel({ app }) {
     </div>`;
 }
 
+// ---------------- Tags ----------------
+function TagsPanel({ app }) {
+  const counts = {};
+  app.state.docs.forEach(d => d.tags.forEach(t => { counts[t] = (counts[t] || 0) + 1; }));
+  const names = Object.keys(counts).sort((a, b) => a.localeCompare(b, 'de'));
+  const [q, setQ] = useState('');
+  const rename = async (from, to) => {
+    try { const r = await api('/tags/rename', { method: 'POST', body: { from, to } }); await app.refresh(); app.flash(to ? `#${from} → #${to} (${r.documents} Dokumente)` : `#${from} entfernt (${r.documents} Dokumente)`); }
+    catch (e) { app.flash(e.message, null, true); }
+  };
+  const askRename = t => {
+    const to = prompt(`Tag „${t}“ umbenennen in:\n\nGibt es den neuen Namen schon, werden beide Tags zusammengeführt.`, t);
+    if (to && to.trim() && to.trim().toLowerCase() !== t) rename(t, to.trim());
+  };
+  const shown = names.filter(t => !q.trim() || t.includes(q.trim().toLowerCase()));
+  return html`
+    <div class="panel" id="panel-tags">
+      <${PanelHead} title=${`Tags (${names.length})`} desc="Tags überall umbenennen, zwei Tags zusammenführen oder einen Tag aus allen Dokumenten entfernen." />
+      ${names.length > 12 && html`<input class="input" style=${{ maxWidth: '260px' }} value=${q} placeholder="Tags filtern …" onInput=${e => setQ(e.target.value)} />`}
+      <div class="tag-admin">
+        ${shown.map(t => html`<div class="tag-admin-row">
+          <button type="button" class="tag-chip lg" title="Dokumente mit diesem Tag anzeigen" onClick=${() => app.go('docs', { folder: null, tag: t, q: '' })}>#${t}<span class="faint">${counts[t]}</span></button>
+          <button type="button" class="w-icon" title="Umbenennen / zusammenführen" onClick=${() => askRename(t)}><span class="ms">edit</span></button>
+          <button type="button" class="w-icon" title="Aus allen Dokumenten entfernen" onClick=${() => { if (confirm(`Tag „${t}“ aus ${counts[t]} Dokument(en) entfernen?`)) rename(t, ''); }}><span class="ms">delete</span></button>
+        </div>`)}
+        ${names.length === 0 && html`<div class="small muted">Noch keine Tags vorhanden.</div>`}
+      </div>
+    </div>`;
+}
+
 // ---------------- Daten ----------------
 function DataPanel({ app }) {
   const restoreRef = { current: null };
@@ -256,7 +286,8 @@ function DataPanel({ app }) {
     <div class="panel" style=${{ gap: '11px' }}>
       <${PanelHead} title="Daten" desc=${'Alle Dokumente werden zentral auf dem Server gespeichert. Export und Import hier übertragen Inhalte (Dokumente, Ordner, Vorlagen, Inventar).' + (app.isAdmin() ? ' Vollständige Sicherungen inklusive Dateien, Benutzern und Versionen findest du unter Verwaltung → Sicherungen.' : '')} />
       <div class="btn-row">
-        <button type="button" class="btn btn-primary md" onClick=${() => app.exportMd()}><${Icon} name="download" />Alles als Markdown</button>
+        <a class="btn btn-primary md" href="/api/export/zip" download title="Alle Dokumente als Markdown-Dateien in ihrer Ordnerstruktur, mit Anhängen"><${Icon} name="folder_zip" />Alles als ZIP</a>
+        <button type="button" class="btn btn-ghost md" onClick=${() => app.exportMd()}><${Icon} name="download" />Eine Markdown-Datei</button>
         ${app.isAdmin()
           ? html`<a class="btn btn-ghost md" href="/api/admin/backup" download><${Icon} name="data_object" />Inhalte als JSON</a>`
           : html`<button type="button" class="btn btn-ghost md" onClick=${() => app.exportJson()}><${Icon} name="data_object" />Dokumente als JSON</button>`}
@@ -281,6 +312,7 @@ export function SettingsPage({ app }) {
       <${McpPanel} app=${app} />
       ${app.canEdit() && html`<${TemplatesPanel} app=${app} />`}
       ${app.canEdit() && html`<${FoldersPanel} app=${app} />`}
+      ${app.canEdit() && html`<${TagsPanel} app=${app} />`}
       ${app.canEdit() && html`<${TrashPanel} app=${app} />`}
       <${DataPanel} app=${app} />
     </div>`;
@@ -607,7 +639,7 @@ const AUDIT_LABEL = {
   'admin.settings_updated': 'Systemeinstellungen geändert', 'admin.editor_updated': 'Editor-Einstellungen geändert', 'file.uploaded': 'Datei hochgeladen', 'synced.created': 'Synchronisierten Block erstellt', 'template.created': 'Vorlage erstellt', 'template.updated': 'Vorlage geändert', 'template.deleted': 'Vorlage gelöscht', 'asset.created': 'Inventar-Eintrag angelegt', 'asset.updated': 'Inventar-Eintrag geändert', 'asset.deleted': 'Inventar-Eintrag gelöscht', 'asset.imported': 'Inventar aus CSV importiert', 'admin.backup_exported': 'Inhalte exportiert (JSON)', 'admin.backup_restored': 'JSON eingespielt', 'admin.backup_settings': 'Sicherungs-Einstellungen geändert', 'admin.snapshot_created': 'Sicherung erstellt', 'admin.snapshot_uploaded': 'Sicherung hochgeladen', 'admin.snapshot_downloaded': 'Sicherung heruntergeladen', 'admin.snapshot_deleted': 'Sicherung gelöscht', 'admin.snapshot_restored': 'Sicherung wiederhergestellt',
   'admin.sample_data': 'Beispieldaten geladen', 'doc.created': 'Dokument erstellt', 'doc.updated': 'Dokument geändert', 'doc.deleted': 'Dokument gelöscht',
   'doc.restored': 'Dokument wiederhergestellt', 'doc.purged': 'Dokument endgültig gelöscht', 'doc.reviewed': 'Als geprüft markiert',
-  'doc.imported': 'Dokumente importiert', 'doc.revision_restored': 'Version wiederhergestellt', 'folder.created': 'Ordner angelegt',
+  'doc.imported': 'Dokumente importiert', 'doc.exported_zip': 'Als ZIP exportiert', 'doc.bulk_move': 'Mehrere Dokumente verschoben', 'doc.bulk_tag': 'Tag bei mehreren Dokumenten ergänzt', 'doc.bulk_untag': 'Tag bei mehreren Dokumenten entfernt', 'doc.bulk_trash': 'Mehrere Dokumente gelöscht', 'tag.renamed': 'Tag umbenannt', 'tag.removed': 'Tag entfernt', 'doc.revision_restored': 'Version wiederhergestellt', 'folder.created': 'Ordner angelegt',
   'folder.updated': 'Ordner geändert', 'folder.deleted': 'Ordner gelöscht',
   'login.sso_failed': 'SSO-Anmeldung fehlgeschlagen', 'user.sso_created': 'Benutzer per SSO angelegt',
   'user.sso_role_synced': 'Rolle aus SSO-Gruppen übernommen', 'admin.sso_updated': 'SSO-Einstellungen geändert',

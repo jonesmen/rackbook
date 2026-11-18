@@ -315,6 +315,76 @@ r.post('/docs/:id/revisions/:rev/restore', editor, (req, res) => {
   res.json({ doc: toDto(doc) });
 });
 
+// ---------- Mehrere Dokumente auf einmal ----------
+// action: 'move' (folder), 'tag' (tag), 'untag' (tag), 'trash'
+r.post('/docs/bulk', editor, (req, res) => {
+  const b = req.body || {};
+  const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(String))].slice(0, 500);
+  if (!ids.length) throw new HttpError(400, 'Keine Dokumente ausgewählt.');
+  const action = String(b.action || '');
+  const result = tx(() => {
+    const docs = ids.map(id => loadDoc(req, id));
+    const now = Date.now();
+    if (action === 'move') {
+      if (!folderExists(b.folder)) throw new HttpError(400, 'Der Zielordner existiert nicht.');
+      const set = new Set(ids);
+      for (const d of docs) {
+        // Wird die Elternseite mit verschoben, bleibt die Seite ihre Unterseite – sonst wird sie zur obersten Seite
+        const keepParent = d.parent_id && set.has(d.parent_id);
+        if (keepParent) continue; // folgt der Elternseite über moveDocSubtree
+        db.prepare('UPDATE documents SET folder_id = ?, parent_id = NULL, updated_at = ?, updated_by = ? WHERE id = ?').run(b.folder, now, req.user.id, d.id);
+        moveDocSubtree(d.id, b.folder);
+      }
+    } else if (action === 'tag' || action === 'untag') {
+      const tag = normTags([b.tag])[0];
+      if (!tag) throw new HttpError(400, 'Bitte einen Tag angeben.');
+      for (const d of docs) {
+        const cur = JSON.parse(d.tags);
+        const next = action === 'tag' ? normTags([...cur, tag]) : cur.filter(t => t !== tag);
+        if (next.length === cur.length) continue;
+        saveRevision(d, req.user.id);
+        db.prepare("UPDATE documents SET tags = ?, version = version + 1, updated_at = ?, updated_by = ?, updated_via = 'web' WHERE id = ?").run(JSON.stringify(next), now, req.user.id, d.id);
+      }
+    } else if (action === 'trash') {
+      const all = new Set(ids.flatMap(id => [id, ...docDescendants(id)]));
+      all.forEach(id => db.prepare('UPDATE documents SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL').run(now, req.user.id, id));
+      return { deleted: [...all] };
+    } else throw new HttpError(400, 'Unbekannte Aktion.');
+    return {};
+  });
+  audit(req, 'doc.bulk_' + action, null, { count: ids.length, folder: b.folder, tag: b.tag });
+  const rows = db.prepare(`${DOC_SELECT} WHERE d.deleted_at IS NULL ORDER BY d.updated_at DESC`).all(req.user.id);
+  res.json({ docs: rows.map(toDto), ...result });
+});
+
+// ---------- Tags verwalten ----------
+// Tag überall umbenennen (to = vorhandener Tag → zusammenführen, to leer → entfernen)
+r.post('/tags/rename', editor, (req, res) => {
+  const from = normTags([req.body?.from])[0];
+  const to = req.body?.to ? normTags([req.body.to])[0] : null;
+  if (!from) throw new HttpError(400, 'Bitte den Tag angeben.');
+  if (req.body?.to && !to) throw new HttpError(400, 'Der neue Name ist ungültig.');
+  const n = tx(() => {
+    let count = 0;
+    const now = Date.now();
+    for (const d of db.prepare('SELECT * FROM documents WHERE deleted_at IS NULL').all()) {
+      const cur = JSON.parse(d.tags);
+      if (!cur.includes(from)) continue;
+      const next = normTags(cur.map(t => (t === from ? to : t)).filter(Boolean));
+      db.prepare('UPDATE documents SET tags = ?, updated_at = ?, updated_by = ? WHERE id = ?').run(JSON.stringify(next), now, req.user.id, d.id);
+      count++;
+    }
+    for (const a of db.prepare('SELECT id, tags FROM assets').all()) {
+      const cur = JSON.parse(a.tags || '[]');
+      if (!cur.includes(from)) continue;
+      db.prepare('UPDATE assets SET tags = ? WHERE id = ?').run(JSON.stringify(normTags(cur.map(t => (t === from ? to : t)).filter(Boolean))), a.id);
+    }
+    return count;
+  });
+  audit(req, to ? 'tag.renamed' : 'tag.removed', from, { to, documents: n });
+  res.json({ ok: true, documents: n });
+});
+
 // ---------- Markdown-Import ----------
 r.post('/import', editor, (req, res) => {
   const files = Array.isArray(req.body?.files) ? req.body.files.slice(0, 100) : [];
