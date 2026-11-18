@@ -1076,16 +1076,25 @@ class App extends Component {
     const s = this.state;
     const sq = s.sq.trim().toLowerCase();
     const results = [];
+    // Mehrere Wörter: alle müssen vorkommen (Titel, Tags oder Inhalt), die Reihenfolge ist egal
+    const words = [...new Set(sq.split(/\s+/).filter(Boolean))];
     if (sq) s.docs.forEach(d => {
       const clean = plain(d.content).replace(/[#|>]/g, ' ').replace(/\s+/g, ' ').trim();
-      const idx = clean.toLowerCase().indexOf(sq), inTitle = d.title.toLowerCase().includes(sq), inTag = d.tags.some(t => t.includes(sq));
-      if (idx < 0 && !inTitle && !inTag) return;
+      const low = clean.toLowerCase(), title = d.title.toLowerCase();
+      if (!words.every(w => low.includes(w) || title.includes(w) || d.tags.some(t => t.includes(w)))) return;
+      const phrase = low.indexOf(sq);
+      const hit = phrase >= 0 ? sq : words.find(w => low.includes(w));
+      const idx = hit ? low.indexOf(hit) : -1;
+      const inTitle = words.every(w => title.includes(w));
       const r = this.row(d);
-      if (idx >= 0) { r.pre = (idx > 70 ? '…' : '') + clean.slice(Math.max(0, idx - 70), idx); r.match = clean.slice(idx, idx + sq.length); r.post = clean.slice(idx + sq.length, idx + sq.length + 120) + '…'; }
+      if (idx >= 0) { r.pre = (idx > 70 ? '…' : '') + clean.slice(Math.max(0, idx - 70), idx); r.match = clean.slice(idx, idx + hit.length); r.post = clean.slice(idx + hit.length, idx + hit.length + 120) + '…'; }
       else { r.pre = r.excerpt; r.match = ''; r.post = ''; }
-      r.score = (inTitle ? 2 : 0) + (idx >= 0 ? 1 : 0);
+      r.score = (inTitle ? 3 : 0) + (phrase >= 0 ? 2 : 0) + (words.some(w => title.includes(w)) ? 1 : 0);
       results.push(r);
     });
+    // Inventar: Name, IP, Tags und Felder
+    const flat = v => (Array.isArray(v) ? v.map(c => `${c.label} ${c.value}`).join(' ') : v);
+    const assetHits = sq ? (s.assets || []).filter(a => { const hay = [a.name, ...a.ips.map(i => i.address), ...a.tags, ...Object.values(a.data).map(flat)].join(' ').toLowerCase(); return words.every(w => hay.includes(w)); }).slice(0, 12) : [];
     results.sort((a, b) => b.score - a.score || b.d.updated - a.d.updated);
     const tagCounts = {};
     s.docs.forEach(d => d.tags.forEach(t => { tagCounts[t] = (tagCounts[t] || 0) + 1; }));
@@ -1096,7 +1105,16 @@ class App extends Component {
         ${this.globalSearchInput('search-box big', 'Titel, Inhalte, IP-Adressen, Befehle …')}
         ${sq ? html`
           <div style=${{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style=${{ fontSize: '13px', color: 'var(--muted)' }}>${results.length} Treffer</div>
+            <div style=${{ fontSize: '13px', color: 'var(--muted)' }}>${plural(results.length, 'Dokument', 'Dokumente')}${assetHits.length ? ` · ${plural(assetHits.length, 'Inventar-Eintrag', 'Inventar-Einträge')}` : ''}</div>
+            ${assetHits.map(a => html`
+              <button type="button" class="card click result" onClick=${() => this.go('inventory', { assetId: a.id })}>
+                <div class="ficon s32" style=${fcol(200)}><span class="ms">inventory_2</span></div>
+                <div style=${{ minWidth: 0, flex: 1 }}>
+                  <div class="t">${a.name}</div>
+                  <div class="m">Inventar • ${a.kind === 'network' ? a.data.cidr || 'Netzwerk' : a.ips.map(i => i.address).join(', ') || '–'}</div>
+                  ${a.data.description && html`<p>${a.data.description}</p>`}
+                </div>
+              </button>`)}
             ${results.map(r => html`
               <button type="button" class="card click result" onClick=${() => this.go('doc', { docId: r.d.id })}>
                 <div class="ficon s32" style=${r.c}><span class="ms">description</span></div>
@@ -1106,7 +1124,7 @@ class App extends Component {
                   <p>${r.pre}${r.match && html`<mark>${r.match}</mark>`}${r.post}</p>
                 </div>
               </button>`)}
-            ${results.length === 0 && html`<div class="box-empty">Keine Treffer für „${s.sq}“.</div>`}
+            ${results.length === 0 && assetHits.length === 0 && html`<div class="box-empty">Keine Treffer für „${s.sq}“.</div>`}
           </div>` : html`
           <div style=${{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             <h2 class="h2 s16">Nach Tags stöbern</h2>

@@ -171,6 +171,11 @@ claude mcp add --transport http rackbook https://docs.example.de/mcp \
 | `replace_in_document` | Schreiben | Eindeutige Textstelle ersetzen |
 | `update_document` | Schreiben | Komplett überarbeiten (mit Versionsprüfung) |
 | `delete_document` | Löschen | In den Papierkorb verschieben |
+| `list_trash`, `restore_document` | Lesen / Schreiben | Papierkorb anzeigen, Dokumente wiederherstellen |
+| `list_revisions`, `restore_revision` | Lesen / Schreiben | Versionsverlauf lesen, frühere Version wiederherstellen |
+| `update_folder`, `delete_folder` | Ordner | Ordner umbenennen/verschieben, leere Ordner löschen (nur Admin) |
+| `save_template` | Schreiben | Eigene Vorlage anlegen (aus Markdown oder einem Dokument) |
+| `delete_asset` | Löschen | Inventar-Eintrag löschen |
 | `create_folder` | Ordner | Neuen Ordner anlegen |
 | `list_files`, `read_file` | Lesen | Hochgeladene Dateien auflisten (alle oder je Dokument) und lesen – Bilder als Bild, Text/Konfigurationen/SVG/Diagramme als Text, PDFs als Ressource |
 | `list_templates` (+ `template` bei `create_document`) | Lesen / Schreiben | Vorlagen auflisten und Dokumente daraus anlegen |

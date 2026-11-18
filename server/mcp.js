@@ -1,8 +1,8 @@
 // Leichtgewichtiger MCP-Server (Model Context Protocol, Streamable HTTP, zustandslos).
 // KI-Assistenten (Claude, ChatGPT, Cursor …) können darüber Dokumentation lesen und pflegen.
 import { getSynced, syncedRefs } from './synced.js';
-import { getTemplate, listTemplates, applyPlaceholders } from './templates.js';
-import { KINDS, STATUSES, FIELDS, listAssets, getAsset, createAsset, updateAsset, ipOverview, ipOverviewText, isIp, parseCidr, ipToInt } from './assets.js';
+import { getTemplate, listTemplates, applyPlaceholders, createTemplate } from './templates.js';
+import { KINDS, STATUSES, FIELDS, listAssets, getAsset, createAsset, updateAsset, deleteAsset, ipOverview, ipOverviewText, normIp, parseCidr, inCidr } from './assets.js';
 import { getEditorSettings, storeBuffer, getFileRow, readFileBuffer, fileSnippet, fileRefs, fileDto } from './files.js';
 import { fmtSize } from '../public/js/md.js';
 import { db, tx, getSetting, setSetting } from './db.js';
@@ -269,8 +269,9 @@ Der Inhalt ist Markdown; im Web-Editor erscheint jeder Absatz als Block. Verwend
 - Kanban-Board: \`\`\`kanban mit JSON \`{"columns":[{"title":"Offen","color":"gray","cards":[{"title":"…","note":"…"}]}]}\`
 - Einbettung (nur wenn der Benutzer es wünscht): \`::embed {"url":"https://…"}\` (YouTube, Vimeo, Loom, Figma, Miro, Airtable, Typeform, Google Drive/Sheets, beliebige https-Seite)
 - Dateien: \`list_files\` zeigt hochgeladene Bilder, PDFs und Anhänge (auch je Dokument), \`read_file\` liefert ihren Inhalt (Bilder als Bild, Text/Konfigurationen/SVG als Text, PDFs als Ressource).${ctx.scopes.has('files') ? ' Mit `upload_file` lädst du Dateien hoch (Base64 oder Text, max. 20 MB) – mit `document` direkt ins Dokument; sonst das gelieferte Markdown selbst einfügen. Netzpläne lieber als ```mermaid, Screenshots/Fotos als Bild.' : ''}
+- Papierkorb und Versionen: \`list_trash\`, \`list_revisions\`${ctx.scopes.has('write') ? ', \`restore_document\`, \`restore_revision\` (nur auf ausdrücklichen Wunsch)' : ''}. Verschieben: \`update_document\` mit \`folder\` oder \`parent\`.
 - Vorlagen: \`list_templates\` zeigt Vorlagen für Dienst, Host, Runbook, Projekt, Netzwerk, Störung und eigene – neue Dokumente möglichst mit \`create_document\` + \`template\` anlegen und dann füllen.
-- Inventar${ctx.folders.length ? ' (für dieses Token nicht verfügbar)' : ''}: Hosts, VMs, Container, Geräte, Dienste und Netzwerke sind als strukturierte Einträge erfasst (\`list_assets\`, \`get_asset\`${ctx.scopes.has('write') ? ', \`save_asset\`' : ''}, \`ip_overview\`). IPs, Hardware und „läuft auf“ gehören ins Inventar, Erklärungen und Abläufe ins Dokument; beides über \`doc\` verknüpfen und im Dokument mit \`::asset {"id":"as_…"}\` als Karte einbinden. Vor dem Vergeben einer IP \`ip_overview\` prüfen.
+- Inventar${ctx.folders.length ? ' (für dieses Token nicht verfügbar)' : ''}: Hosts, VMs, Container, Geräte, Dienste und Netzwerke sind als strukturierte Einträge erfasst (\`list_assets\`, \`get_asset\`${ctx.scopes.has('write') ? ', \`save_asset\`' : ''}${ctx.scopes.has('delete') ? ', \`delete_asset\`' : ''}, \`ip_overview\`). IPs, Hardware und „läuft auf“ gehören ins Inventar, Erklärungen und Abläufe ins Dokument; beides über \`doc\` verknüpfen und im Dokument mit \`::asset {"id":"as_…"}\` als Karte einbinden. Vor dem Vergeben einer IP \`ip_overview\` prüfen.
 - Nicht verändern oder neu erfinden: Zeilen mit \`::image\`/\`![…](/files/…)\`, \`::video\`, \`::audio\`, \`::pdf\`, \`::file\`, \`::drawio\`, \`::excalidraw\`, \`::synced\` sowie \`\`\`base-Blöcke – sie verweisen auf hochgeladene Dateien, Zeichnungen bzw. synchronisierte Inhalte. Beim Umschreiben eines Dokuments unverändert übernehmen.
 - Kein HTML.
 
@@ -514,6 +515,143 @@ const TOOLS = [
     },
   },
   {
+    name: 'list_trash', scope: 'read', title: 'Papierkorb anzeigen',
+    description: 'Listet Dokumente im Papierkorb (mit Löschdatum). Mit restore_document wiederherstellen.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    run(ctx) {
+      const rows = db.prepare('SELECT * FROM documents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC').all().filter(d => folderOk(ctx, d.folder_id)).slice(0, 200);
+      return {
+        text: rows.length ? rows.map(d => `- ${d.title} (\`${d.id}\`, ${folderPath(d.folder_id)}) – gelöscht ${iso(d.deleted_at)}`).join('\n') : 'Der Papierkorb ist leer.',
+        structured: { documents: rows.map(d => ({ id: d.id, title: d.title, folder: d.folder_id, parent: d.parent_id ?? null, deletedAt: iso(d.deleted_at) })) },
+      };
+    },
+  },
+  {
+    name: 'restore_document', scope: 'write', title: 'Dokument wiederherstellen',
+    description: 'Holt ein Dokument (samt gleichzeitig gelöschter Unterseiten) aus dem Papierkorb zurück.',
+    inputSchema: { type: 'object', properties: { id: str('Dokument-ID aus list_trash') }, required: ['id'] },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    run(ctx, a, req) {
+      const d = db.prepare('SELECT * FROM documents WHERE id = ?').get(String(a.id || ''));
+      if (!d || !folderOk(ctx, d.folder_id)) throw new ToolError(`Dokument „${a.id}“ nicht gefunden (oder nicht freigegeben).`);
+      if (!d.deleted_at) return { text: `„${d.title}“ liegt nicht im Papierkorb.`, structured: meta(d) };
+      const ids = [d.id, ...docDescendants(d.id, { includeDeleted: true }).filter(id => db.prepare('SELECT deleted_at FROM documents WHERE id = ?').get(id).deleted_at === d.deleted_at)];
+      tx(() => {
+        ids.forEach(id => db.prepare('UPDATE documents SET deleted_at = NULL, deleted_by = NULL WHERE id = ?').run(id));
+        // Liegt die Elternseite noch im Papierkorb, wird das Dokument zur obersten Seite
+        const parent = d.parent_id && db.prepare('SELECT deleted_at FROM documents WHERE id = ?').get(d.parent_id);
+        if (d.parent_id && (!parent || parent.deleted_at)) db.prepare('UPDATE documents SET parent_id = NULL WHERE id = ?').run(d.id);
+      });
+      logWrite(ctx, req, 'doc.restored', d.id, { title: d.title, subpages: ids.length - 1 });
+      return { text: `„${d.title}“${ids.length > 1 ? ` und ${ids.length - 1} Unterseite(n)` : ''} wiederhergestellt.`, structured: meta(loadDoc(ctx, d.id)) };
+    },
+  },
+  {
+    name: 'list_revisions', scope: 'read', title: 'Versionsverlauf',
+    description: 'Listet frühere Versionen eines Dokuments (Version, Zeitpunkt, Autor). Mit `revision` wird der Inhalt einer Version mitgeliefert; mit restore_revision wiederherstellen.',
+    inputSchema: { type: 'object', properties: { id: str('Dokument-ID'), revision: { type: 'integer', description: 'Optional: Revisions-ID, deren Inhalt angezeigt werden soll' } }, required: ['id'] },
+    annotations: { readOnlyHint: true },
+    run(ctx, a) {
+      const d = loadDoc(ctx, a.id);
+      const rows = db.prepare('SELECT r.id, r.version, r.title, r.content, r.created_at, r.via, u.display_name AS author FROM revisions r LEFT JOIN users u ON u.id = r.created_by WHERE r.doc_id = ? ORDER BY r.version DESC').all(d.id);
+      const one = a.revision !== undefined ? rows.find(r => r.id === Number(a.revision)) : null;
+      if (a.revision !== undefined && !one) throw new ToolError(`Version ${a.revision} nicht gefunden.`);
+      const list = rows.map(r => ({ revision: r.id, version: r.version, title: r.title, createdAt: iso(r.created_at), author: r.author, via: r.via || 'web', words: r.content.split(/\s+/).filter(Boolean).length }));
+      return {
+        text: one ? `# ${one.title} (Version ${one.version}, ${iso(one.created_at)})\n\n${one.content}`
+          : `Aktuell: Version ${d.version}. Frühere Versionen:\n` + (list.map(r => `- Revision \`${r.revision}\`: Version ${r.version}, ${r.createdAt}${r.author ? ' von ' + r.author : ''}${r.via === 'mcp' ? ' (KI)' : ''}, ${r.words} Wörter`).join('\n') || '– keine –'),
+        structured: one ? { revision: one.id, version: one.version, title: one.title, content: one.content } : { current: d.version, revisions: list },
+      };
+    },
+  },
+  {
+    name: 'restore_revision', scope: 'write', title: 'Version wiederherstellen',
+    description: 'Setzt ein Dokument auf eine frühere Version zurück. Der aktuelle Stand bleibt als Version erhalten. Nur auf ausdrücklichen Wunsch des Benutzers.',
+    inputSchema: { type: 'object', properties: { id: str('Dokument-ID'), revision: { type: 'integer', description: 'Revisions-ID aus list_revisions' } }, required: ['id', 'revision'] },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    run(ctx, a, req) {
+      return tx(() => {
+        const d = loadDoc(ctx, a.id);
+        const rev = db.prepare('SELECT * FROM revisions WHERE id = ? AND doc_id = ?').get(Number(a.revision), d.id);
+        if (!rev) throw new ToolError(`Version ${a.revision} nicht gefunden (siehe list_revisions).`);
+        const u = updateDoc(ctx, d, { title: rev.title, tags: rev.tags, content: rev.content });
+        logWrite(ctx, req, 'doc.revision_restored', d.id, { title: u.title, revision: rev.id });
+        return { text: `„${u.title}“ auf den Stand von Version ${rev.version} zurückgesetzt (jetzt Version ${u.version}).`, structured: meta(u) };
+      });
+    },
+  },
+  {
+    name: 'update_folder', scope: 'folders', title: 'Ordner ändern',
+    description: 'Benennt einen Ordner um, ändert Icon/Farbton oder verschiebt ihn unter einen anderen Ordner (parent leer = oberste Ebene).',
+    inputSchema: { type: 'object', properties: { id: str('Ordner-ID'), name: str('Neuer Name'), parent: str('Neuer übergeordneter Ordner (ID) oder leer'), icon: str('Material-Symbols-Name'), hue: { type: 'integer', minimum: 0, maximum: 360 } }, required: ['id'] },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    run(ctx, a, req) {
+      checkFolder(ctx, a.id);
+      const set = {};
+      if (a.name !== undefined) { set.name = ctrlStrip(a.name).replace(/\s+/g, ' ').trim().slice(0, 60); if (!set.name) throw new ToolError('Bitte einen Ordnernamen angeben.'); }
+      if (a.icon !== undefined) { if (!/^[a-z0-9_]{1,40}$/.test(String(a.icon))) throw new ToolError('Ungültiges Icon.'); set.icon = String(a.icon); }
+      if (a.hue !== undefined) { const h = Math.round(Number(a.hue)); if (!(h >= 0 && h <= 360)) throw new ToolError('Farbton muss zwischen 0 und 360 liegen.'); set.hue = h; }
+      if (a.parent !== undefined) {
+        const p = a.parent ? String(a.parent) : null;
+        if (p) checkFolder(ctx, p);
+        else if (ctx.folders.length) throw new ToolError('Dieses Token darf Ordner nicht auf die oberste Ebene verschieben.');
+        try { set.parent_id = checkFolderParent(String(a.id), p); } catch (e) { throw new ToolError(e.message); }
+      }
+      const keys = Object.keys(set);
+      if (!keys.length) throw new ToolError('Nichts zu ändern – name, parent, icon oder hue angeben.');
+      db.prepare(`UPDATE folders SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map(k => set[k]), String(a.id));
+      logWrite(ctx, req, 'folder.updated', String(a.id), set);
+      return { text: `Ordner \`${a.id}\` geändert: ${folderPath(String(a.id))}.`, structured: { id: String(a.id), path: folderPath(String(a.id)) } };
+    },
+  },
+  {
+    name: 'delete_folder', scope: 'folders', title: 'Leeren Ordner löschen',
+    description: 'Löscht einen leeren Ordner (ohne Dokumente und Unterordner). Nur für Administratoren und nur auf ausdrücklichen Wunsch.',
+    inputSchema: { type: 'object', properties: { id: str('Ordner-ID') }, required: ['id'] },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    run(ctx, a, req) {
+      if (ctx.user.role !== 'admin') throw new ToolError('Ordner löschen dürfen nur Administratoren.');
+      checkFolder(ctx, a.id);
+      const id = String(a.id);
+      const n = db.prepare('SELECT COUNT(*) AS n FROM documents WHERE folder_id = ?').get(id).n;
+      if (n) throw new ToolError(`Der Ordner enthält noch ${n} Dokument(e) (einschließlich Papierkorb). Bitte zuerst verschieben oder löschen.`);
+      if (db.prepare('SELECT COUNT(*) AS n FROM folders WHERE parent_id = ?').get(id).n) throw new ToolError('Der Ordner enthält noch Unterordner.');
+      if (db.prepare('SELECT COUNT(*) AS n FROM folders').get().n <= 1) throw new ToolError('Der letzte Ordner kann nicht gelöscht werden.');
+      const name = folderName(id);
+      db.prepare('DELETE FROM folders WHERE id = ?').run(id);
+      logWrite(ctx, req, 'folder.deleted', id, { name });
+      return { text: `Ordner „${name}“ gelöscht.` };
+    },
+  },
+  {
+    name: 'save_template', scope: 'write', title: 'Vorlage anlegen',
+    description: 'Legt eine eigene Dokumentvorlage an – entweder aus Markdown (`content`) oder aus einem bestehenden Dokument (`from_document`). `{{heute}}` im Inhalt wird beim Verwenden zum aktuellen Datum.',
+    inputSchema: { type: 'object', properties: { name: str('Name der Vorlage'), description: str('Kurzbeschreibung'), content: str('Markdown-Inhalt'), from_document: str('Alternativ: Dokument-ID, dessen Inhalt übernommen wird'), title: str('Titelvorschlag für neue Dokumente'), tags: { type: 'array', items: { type: 'string' } } }, required: ['name'] },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    run(ctx, a, req) {
+      if (ctx.folders.length) throw new ToolError('Vorlagen können nur mit Tokens ohne Ordner-Beschränkung angelegt werden.');
+      const b = { name: a.name, description: a.description, title: a.title, tags: a.tags !== undefined ? tagList(a.tags) : undefined, content: a.content };
+      if (a.from_document) { const d = loadDoc(ctx, a.from_document); b.content = b.content ?? d.content; b.title = b.title ?? d.title; b.tags = b.tags ?? JSON.parse(d.tags); }
+      if (!b.content) throw new ToolError('Bitte `content` oder `from_document` angeben.');
+      const t = createTemplate(b, ctx.user.id);
+      logWrite(ctx, req, 'template.created', t.id, { name: t.name });
+      return { text: `Vorlage „${t.name}“ angelegt (\`${t.id}\`). Verwendung: create_document mit template="${t.id}".`, structured: { id: t.id, name: t.name } };
+    },
+  },
+  {
+    name: 'delete_asset', scope: 'delete', title: 'Inventar-Eintrag löschen',
+    description: 'Löscht einen Inventar-Eintrag endgültig (Untereinträge rücken eine Ebene nach oben). Nur auf ausdrücklichen Wunsch des Benutzers; für außer Betrieb genommene Geräte besser save_asset mit status="retired".',
+    inputSchema: { type: 'object', properties: { id: str('Eintrags-ID (as_…)') }, required: ['id'] },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    run(ctx, a, req) {
+      noFolderLimit(ctx);
+      const cur = deleteAsset(a.id);
+      logWrite(ctx, req, 'asset.deleted', cur.id, { name: cur.name, kind: cur.kind });
+      return { text: `Inventar-Eintrag „${cur.name}“ gelöscht.` };
+    },
+  },
+  {
     name: 'create_folder', scope: 'folders', title: 'Ordner anlegen',
     description: 'Legt einen neuen Ordner an. Nur wenn kein vorhandener Ordner passt. icon ist ein Material-Symbols-Name (z. B. dns, lan, router, storage, security, cloud, terminal).',
     inputSchema: { type: 'object', properties: { name: str('Ordnername'), parent: str('Optional: ID des übergeordneten Ordners (für Unterordner)'), icon: str('Material-Symbols-Name', { default: 'folder' }), hue: { type: 'integer', minimum: 0, maximum: 360, description: 'Farbton 0–360' } }, required: ['name'] },
@@ -534,7 +672,7 @@ const TOOLS = [
       const sort = (db.prepare('SELECT MAX(sort) AS m FROM folders').get().m ?? 0) + 1;
       db.prepare('INSERT INTO folders (id, name, icon, hue, sort, parent_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, name, icon, hue, sort, parent, ctx.user.id, Date.now());
       logWrite(ctx, req, 'folder.created', id, { name, parent });
-      return { text: `Ordner „${folderPath(id)}“ angelegt (ID \`${id}\`).` };
+      return { text: `Ordner „${folderPath(id)}“ angelegt (ID \`${id}\`).`, structured: { id, path: folderPath(id) } };
     },
   },
   {
@@ -661,10 +799,10 @@ const TOOLS = [
       if (a.query) {
         const q = String(a.query).trim().toLowerCase();
         // IP-Suche: genaue Adresse oder Netzwerk, das die Adresse enthält
-        if (isIp(q)) {
-          list = list.filter(x => x.ips.some(i => i.address.toLowerCase() === q)
-            || (x.kind === 'network' && /^\d+\.\d+\.\d+\.\d+$/.test(q) && parseCidr(x.data.cidr) && ipToInt(q) >= parseCidr(x.data.cidr).start && ipToInt(q) <= parseCidr(x.data.cidr).end));
-        } else list = list.filter(x => [x.name, ...x.ips.map(i => i.address), ...x.tags, ...Object.values(x.data)].join(' ').toLowerCase().includes(q));
+        const ip = normIp(q);
+        if (ip) {
+          list = list.filter(x => x.ips.some(i => (normIp(i.address) || i.address) === ip) || (x.kind === 'network' && inCidr(parseCidr(x.data.cidr), ip)));
+        } else list = list.filter(x => [x.name, ...x.ips.map(i => i.address), ...x.tags, ...Object.values(x.data).map(v => (Array.isArray(v) ? v.map(c => `${c.label} ${c.value}`).join(' ') : v))].join(' ').toLowerCase().includes(q));
       }
       return {
         text: list.length ? list.map(x => `- \`${x.id}\` ${x.name} (${KINDS[x.kind]}${x.status !== 'active' ? `, ${STATUSES[x.status]}` : ''})${x.ips.length ? ` · ${x.ips.map(i => i.address).join(', ')}` : ''}${x.data.cidr ? ` · ${x.data.cidr}` : ''}${x.parent ? ` · läuft auf ${byId.get(x.parent)?.name || x.parent}` : ''}`).join('\n') : 'Keine Inventar-Einträge gefunden.',
@@ -686,8 +824,9 @@ const TOOLS = [
       const doc = x.doc && db.prepare('SELECT id, title, folder_id FROM documents WHERE id = ? AND deleted_at IS NULL').get(x.doc);
       const lines = [`# ${x.name} (${KINDS[x.kind]}, ${STATUSES[x.status]})`, `ID: \`${x.id}\`${parent ? ` · läuft auf ${parent.name} (\`${parent.id}\`)` : ''}${x.tags.length ? ` · Tags: ${x.tags.join(', ')}` : ''}`];
       if (x.ips.length) lines.push('', 'IPs:', ...x.ips.map(i => `- ${i.address}${i.mac ? ` (MAC ${i.mac})` : ''}${i.note ? ` – ${i.note}` : ''}`));
-      const fields = Object.entries(x.data).filter(([k]) => k !== 'notes');
+      const fields = Object.entries(x.data).filter(([k]) => k !== 'notes' && k !== 'custom');
       if (fields.length) lines.push('', ...fields.map(([k, v]) => `- ${k}: ${v}`));
+      if ((x.data.custom || []).length) lines.push('', 'Eigene Felder:', ...x.data.custom.map(c => `- ${c.label}: ${c.value}`));
       if (x.data.notes) lines.push('', 'Notizen:', x.data.notes);
       if (kids.length) lines.push('', 'Läuft darauf:', ...kids.map(k => `- ${k.name} (${KINDS[k.kind]}, \`${k.id}\`)`));
       if (doc && folderOk(ctx, doc.folder_id)) lines.push('', `Dokumentation: ${doc.title} (\`${doc.id}\`)`);
@@ -696,7 +835,7 @@ const TOOLS = [
   },
   {
     name: 'save_asset', scope: 'write', title: 'Inventar-Eintrag anlegen/ändern',
-    description: `Legt einen Inventar-Eintrag an (ohne \`id\`) oder ändert ihn (mit \`id\`, nur übergebene Felder). Vorher mit list_assets prüfen, ob es ihn schon gibt. \`data\`-Felder: ${FIELDS.join(', ')} (Netzwerke: cidr z. B. 10.0.20.0/24, vlan, gateway, dhcp z. B. 10.0.20.100-10.0.20.200). Keine Passwörter speichern.`,
+    description: `Legt einen Inventar-Eintrag an (ohne \`id\`) oder ändert ihn (mit \`id\`, nur übergebene Felder). Vorher mit list_assets prüfen, ob es ihn schon gibt. \`data\`-Felder: ${FIELDS.join(', ')} (Netzwerke: cidr z. B. 10.0.20.0/24 oder fd00:20::/64, vlan, gateway, dhcp z. B. 10.0.20.100-10.0.20.200). Weitere Angaben (z. B. ram, cpu, firmware) einfach als zusätzliche Schlüssel in \`data\` übergeben – sie werden als eigene Felder gespeichert. Keine Passwörter speichern.`,
     inputSchema: {
       type: 'object',
       properties: {

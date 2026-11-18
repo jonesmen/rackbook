@@ -31,7 +31,17 @@ function descendants(list, id) {
 }
 
 export class InventoryPage extends Component {
-  state = { q: '', kind: '', overview: null, form: null, formFor: null, busy: false };
+  state = { q: '', kind: '', sort: 'tree', overview: null, form: null, formFor: null, busy: false };
+  csvRef = { current: null };
+  async importCsv(file) {
+    const { app } = this.props;
+    try {
+      const r = await api('/assets/import', { method: 'POST', body: { csv: await file.text() } });
+      await this.reload();
+      app.flash(`Import: ${r.created} neu, ${r.updated} aktualisiert${r.errors.length ? `, ${r.errors.length} Zeile(n) mit Fehlern` : ''}`, null, r.errors.length > 0);
+      if (r.errors.length) alert('Diese Zeilen wurden nicht (vollständig) übernommen:\n\n' + r.errors.slice(0, 15).map(e => `Zeile ${e.line}: ${e.error}`).join('\n') + (r.errors.length > 15 ? `\n… und ${r.errors.length - 15} weitere` : ''));
+    } catch (e) { app.fail(e); }
+  }
   componentDidMount() { this.loadOverview(); this.props.app.invDirty = () => !!this.state.formDirty && !!this.props.app.state.assetId; }
   componentWillUnmount() { this.props.app.invDirty = null; }
   async loadOverview() {
@@ -46,6 +56,9 @@ export class InventoryPage extends Component {
     if (s.assetId) return this.renderDetail(s.assetId === 'new' ? null : s.assets.find(a => a.id === s.assetId), s.assetId === 'new');
     const tab = s.invTab === 'ips' ? 'ips' : 'list';
     const conflicts = this.state.overview ? this.state.overview.conflicts : [];
+    const macs = (this.state.overview && this.state.overview.macConflicts) || [];
+    const overlaps = (this.state.overview && this.state.overview.overlaps) || [];
+    const link = a => html`<button type="button" class="link-acc" onClick=${() => app.go('inventory', { assetId: a.id })}>${a.name}</button>`;
     return html`
       <div class="page g18" data-screen-label="Inventar">
         <div class="page-head">
@@ -54,6 +67,8 @@ export class InventoryPage extends Component {
             ${app.canEdit() && html`<button type="button" class="btn btn-primary" onClick=${() => app.go('inventory', { assetId: 'new', newAssetParent: null, newKind: null })}><span class="ms">add</span>Neuer Eintrag</button>`}</div>
         </div>
         ${conflicts.length > 0 && html`<div class="banner warn"><span class="ms">warning</span><div class="grow"><b>Doppelt vergebene IP-Adressen:</b> ${conflicts.map(c => html`<span class="inv-conf"><code class="md-code">${c.address}</code> ${c.assets.map((a, k) => html`${k ? ', ' : ''}<button type="button" class="link-acc" onClick=${() => app.go('inventory', { assetId: a.id })}>${a.name}</button>`)}</span>`)}</div></div>`}
+        ${macs.length > 0 && html`<div class="banner warn"><span class="ms">warning</span><div class="grow"><b>Doppelt vergebene MAC-Adressen:</b> ${macs.map(c => html`<span class="inv-conf"><code class="md-code">${c.mac}</code> ${c.assets.map((a, k) => html`${k ? ', ' : ''}${link(a)}`)}</span>`)}</div></div>`}
+        ${overlaps.length > 0 && html`<div class="banner warn"><span class="ms">warning</span><div class="grow"><b>Netze mit überschneidendem Adressbereich:</b> ${overlaps.map(x => html`<span class="inv-conf">${link(x.a)} <code class="md-code">${x.a.cidr}</code> ↔ ${link(x.b)} <code class="md-code">${x.b.cidr}</code></span>`)}</div></div>`}
         <div class="tabs">
           <button type="button" class=${tab === 'list' ? 'on' : ''} onClick=${() => app.go('inventory', { assetId: null, invTab: 'list' })}>Einträge (${s.assets.length})</button>
           <button type="button" class=${tab === 'ips' ? 'on' : ''} onClick=${() => app.go('inventory', { assetId: null, invTab: 'ips' })}>IP-Belegung</button>
@@ -66,9 +81,10 @@ export class InventoryPage extends Component {
   renderList() {
     const { app } = this.props;
     const all = app.state.assets;
-    const { q, kind } = this.state;
+    const { q, kind, sort } = this.state;
     const t = q.trim().toLowerCase();
-    const match = a => (!kind || a.kind === kind) && (!t || [a.name, ...a.ips.map(i => i.address), ...a.tags, ...Object.values(a.data)].join(' ').toLowerCase().includes(t));
+    const flat = v => (Array.isArray(v) ? v.map(c => `${c.label} ${c.value}`).join(' ') : v);
+    const match = a => (!kind || a.kind === kind) && (!t || [a.name, ...a.ips.map(i => i.address), ...a.tags, ...Object.values(a.data).map(flat)].join(' ').toLowerCase().includes(t));
     const ids = new Set(all.map(a => a.id));
     const rows = [];
     // Baum: Einträge ohne (bekannten) übergeordneten Eintrag oben, Untereinträge eingerückt
@@ -78,7 +94,13 @@ export class InventoryPage extends Component {
     const walk = (parent, depth) => all.filter(a => (a.parent && ids.has(a.parent) ? a.parent : null) === parent && visible.has(a.id))
       .sort((a, b) => (a.kind === 'network') - (b.kind === 'network') || a.name.localeCompare(b.name, 'de', { numeric: true }))
       .forEach(a => { rows.push({ a, depth, dim: !match(a) }); walk(a.id, depth + 1); });
-    walk(null, 0);
+    if (sort === 'tree') walk(null, 0);
+    else {
+      // Flache, sortierte Liste
+      const ipKey = a => (a.kind === 'network' ? a.data.cidr || '' : (a.ips[0] || {}).address || '').split(/[./]/).map(x => (/^\d+$/.test(x) ? x.padStart(3, '0') : x)).join('.');
+      const cmp = { name: (a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }), kind: (a, b) => ASSET_KINDS[a.kind].localeCompare(ASSET_KINDS[b.kind], 'de') || a.name.localeCompare(b.name, 'de', { numeric: true }), ip: (a, b) => (ipKey(a) || '~').localeCompare(ipKey(b) || '~'), updated: (a, b) => b.updated - a.updated }[sort];
+      all.filter(match).sort(cmp).forEach(a => rows.push({ a, depth: 0, dim: false }));
+    }
     const counts = Object.fromEntries(Object.keys(ASSET_KINDS).map(k => [k, all.filter(a => a.kind === k).length]));
     const docTitle = id => (app.doc(id) || {}).title;
     return html`
@@ -87,6 +109,14 @@ export class InventoryPage extends Component {
         <div class="chips">
           <button type="button" class=${'chip' + (!kind ? ' on' : '')} onClick=${() => this.setState({ kind: '' })}>Alle</button>
           ${Object.entries(ASSET_KINDS).filter(([k]) => counts[k]).map(([k, l]) => html`<button type="button" class=${'chip' + (kind === k ? ' on' : '')} onClick=${() => this.setState({ kind: kind === k ? '' : k })}><span class="ms">${kindIcon(k)}</span>${l} <span class="faint">${counts[k]}</span></button>`)}
+        </div>
+        <div class="inv-actions">
+          <select class="input inv-sort" value=${sort} aria-label="Sortierung" onChange=${e => this.setState({ sort: e.target.value })}>
+            <option value="tree">Struktur („läuft auf“)</option><option value="name">Nach Name</option><option value="kind">Nach Typ</option><option value="ip">Nach IP</option><option value="updated">Zuletzt geändert</option>
+          </select>
+          <a class="btn btn-ghost sm" href="/api/assets/export.csv" download title="Alle Einträge als CSV-Datei (für Excel/LibreOffice)"><span class="ms">download</span>CSV</a>
+          ${app.canEdit() && html`<button type="button" class="btn btn-ghost sm" title="Einträge aus einer CSV-Datei anlegen oder aktualisieren (gleicher Typ und Name). Tipp: zuerst exportieren und die Datei als Vorlage nehmen." onClick=${() => this.csvRef.current && this.csvRef.current.click()}><span class="ms">upload</span>CSV importieren</button>
+            <input type="file" accept=".csv,text/csv" hidden ref=${el => { this.csvRef.current = el; }} onChange=${e => { const f = e.target.files[0]; e.target.value = ''; if (f) this.importCsv(f); }} />`}
         </div>
       </div>
       ${all.length === 0 ? html`
@@ -122,13 +152,13 @@ export class InventoryPage extends Component {
         ${app.canEdit() && html`<div class="btn-row center"><button type="button" class="btn btn-primary md" onClick=${() => app.go('inventory', { assetId: 'new', newKind: 'network', newAssetParent: null })}><span class="ms">lan</span>Netzwerk anlegen</button></div>`}</div>`}
       <div class="inv-nets">
         ${o.networks.map(n => {
-          const pct = n.usable ? Math.round(((n.used + n.reserved) / n.usable) * 100) : 0;
+          const pct = n.usable ? Math.round(((n.usable - n.available) / n.usable) * 100) : 0;
           return html`
             <div class="card inv-net">
               <div class="row-between"><button type="button" class="inv-net-t" onClick=${() => app.go('inventory', { assetId: n.id })}><span class="ms">lan</span>${n.name}</button>
                 <span class="mono small">${n.cidr}${n.vlan ? ` · VLAN ${n.vlan}` : ''}</span></div>
-              <div class="inv-bar" title=${`${n.used} belegt, ${n.reserved} reserviert, ${n.available} frei`}><div class=${'inv-bar-f' + (pct > 85 ? ' hot' : '')} style=${{ width: Math.min(100, pct) + '%' }}></div></div>
-              <div class="small muted">${n.used} belegt · ${n.available} frei von ${n.usable}${n.gateway ? ` · Gateway ${n.gateway}` : ''}${n.dhcp ? ` · DHCP ${n.dhcp}` : ''}</div>
+              ${n.usable !== null && html`<div class="inv-bar" title=${`${n.used} belegt, ${n.reserved} reserviert, ${n.available} frei`}><div class=${'inv-bar-f' + (pct > 85 ? ' hot' : '')} style=${{ width: Math.min(100, pct) + '%' }}></div></div>`}
+              <div class="small muted">${n.used} belegt${n.usable !== null ? ` · ${n.available} frei von ${n.usable}` : ' · IPv6'}${n.gateway ? ` · Gateway ${n.gateway}` : ''}${n.dhcp ? ` · DHCP ${n.dhcp}` : ''}</div>
               ${n.nextFree.length > 0 && html`<div class="inv-free"><span class="small muted">Nächste freie:</span>${n.nextFree.slice(0, 6).map(ip => html`<button type="button" class="tag-chip mono" title="Kopieren" onClick=${() => copy(ip)}>${ip}</button>`)}</div>`}
               <div class="inv-addrs">
                 ${n.addresses.map(u => html`<button type="button" class=${'inv-addr' + (o.conflicts.some(c => c.address === u.address) ? ' conflict' : '')} onClick=${() => app.go('inventory', { assetId: u.asset })}>
@@ -162,6 +192,8 @@ export class InventoryPage extends Component {
     const all = app.state.assets;
     const set = patch => this.setState({ form: { ...f, ...patch }, formDirty: true });
     const setData = (k, v) => set({ data: { ...f.data, [k]: v } });
+    const custom = Array.isArray(f.data.custom) ? f.data.custom : [];
+    const setCustom = list => setData('custom', list);
     const blocked = a ? descendants(all, a.id) : new Set();
     const parents = all.filter(x => (!a || (x.id !== a.id && !blocked.has(x.id))) && x.kind !== 'network').sort((x, y) => x.name.localeCompare(y.name, 'de'));
     const kids = a ? all.filter(x => x.parent === a.id) : [];
@@ -173,7 +205,7 @@ export class InventoryPage extends Component {
     const doc = f.doc && app.doc(f.doc);
     const save = async () => {
       this.setState({ busy: true });
-      const body = { kind: f.kind, name: f.name, status: f.status, parent: f.parent || null, tags: f.tags, doc: f.doc || null, data: Object.fromEntries(Object.entries(f.data).map(([k, v]) => [k, v ?? ''])), ips: f.ips.filter(i => i.address.trim()) };
+      const body = { kind: f.kind, name: f.name, status: f.status, parent: f.kind === 'network' ? null : (f.parent || null), tags: f.tags, doc: f.doc || null, data: Object.fromEntries(Object.entries(f.data).map(([k, v]) => [k, v ?? ''])), ips: f.ips.filter(i => i.address.trim()) };
       try {
         const r = isNew ? await api('/assets', { method: 'POST', body }) : await api('/assets/' + encodeURIComponent(a.id), { method: 'PUT', body });
         this.state.formDirty = false; this.state.formFor = null;
@@ -233,6 +265,15 @@ export class InventoryPage extends Component {
               <label class="field"><span>Tags</span><input class="input" value=${f.tags} placeholder="kommagetrennt" disabled=${!canEdit} onInput=${e => set({ tags: e.target.value })} /></label>
               ${fields.map(k => html`<label class=${'field' + (['description', 'notes'].includes(k) ? ' wide' : '')}><span>${FIELD_LABELS[k]}</span>${input(k, FIELD_PH[k], k === 'notes')}</label>`)}
             </div>
+            <div class="inv-custom">
+              <div class="row-between"><h2 class="h2 s15">Eigene Felder</h2>${canEdit && custom.length < 20 && html`<button type="button" class="w-btn" onClick=${() => setCustom([...custom, { label: '', value: '' }])}><span class="ms">add</span>Feld</button>`}</div>
+              ${custom.map((c, k) => html`<div class="inv-cf-row">
+                <input class="input" value=${c.label} placeholder="Bezeichnung, z. B. RAM" maxlength="40" disabled=${!canEdit} onInput=${e => setCustom(custom.map((x, j) => (j === k ? { ...x, label: e.target.value } : x)))} />
+                <input class="input" value=${c.value} placeholder="Wert, z. B. 64 GB" maxlength="300" disabled=${!canEdit} onInput=${e => setCustom(custom.map((x, j) => (j === k ? { ...x, value: e.target.value } : x)))} />
+                ${canEdit && html`<button type="button" class="w-icon" title="Entfernen" onClick=${() => setCustom(custom.filter((x, j) => j !== k))}><span class="ms">close</span></button>`}
+              </div>`)}
+              ${custom.length === 0 && html`<div class="md-empty">Für Angaben, die oben fehlen – z. B. RAM, CPU, Firmware, Garantie bis.</div>`}
+            </div>
           </div>
           <div class="inv-side">
             ${f.kind !== 'network' && html`
@@ -264,7 +305,7 @@ export class InventoryPage extends Component {
               </div>`}
             ${net && html`
               <div class="card inv-card">
-                <h2 class="h2 s15">Belegung (${net.used} von ${net.usable})</h2>
+                <h2 class="h2 s15">Belegung (${net.used}${net.usable !== null ? ` von ${net.usable}` : ''})</h2>
                 ${net.nextFree.length > 0 && html`<div class="inv-free"><span class="small muted">Nächste freie:</span>${net.nextFree.slice(0, 6).map(ip => html`<span class="tag-chip mono">${ip}</span>`)}</div>`}
                 <div class="inv-addrs">${net.addresses.map(u => html`<button type="button" class="inv-addr" onClick=${() => app.go('inventory', { assetId: u.asset })}><span class="mono">${u.address}</span><span class="ms">${kindIcon(u.kind)}</span><span class="ell">${u.name}</span></button>`)}</div>
               </div>`}
