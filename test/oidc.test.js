@@ -109,6 +109,19 @@ test('Benutzer ohne erlaubte Gruppe wird abgewiesen', async () => {
   idp.state.user = { sub: 'u-2', preferred_username: 'mallory', groups: ['andere'] };
   const s = await ssoLogin();
   assert.match(s.error, /nicht freigegeben/);
+  assert.match(s.error, /gemeldete Gruppen: andere/);
+  // Ohne Gruppen-Claim nennt die Meldung die Ursache
+  idp.state.user = { sub: 'u-3', preferred_username: 'ohne' };
+  assert.match((await ssoLogin()).error, /keine Gruppen gemeldet/);
+});
+
+test('Admin-Gruppe genügt auch ohne Eintrag bei den erlaubten Gruppen; Schreibweise egal', async () => {
+  await api('PUT', '/admin/oidc', { ...admin, body: { allowedGroups: 'rackbook-users' } });
+  idp.state.user = { sub: 'u-4', preferred_username: 'chefin', groups: ['Rackbook-Admins'] };
+  const s = await ssoLogin();
+  assert.equal(s.error, undefined);
+  assert.equal(s.user.role, 'admin');
+  await api('PUT', '/admin/oidc', { ...admin, body: { allowedGroups: 'rackbook-editors, rackbook-admins, rackbook-users' } });
 });
 
 test('Gleichnamiges lokales Konto wird ohne Freigabe nicht übernommen', async () => {
