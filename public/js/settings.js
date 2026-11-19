@@ -596,7 +596,7 @@ function SsoSettings({ app }) {
 
       <h3 class="h2 s16" style=${{ marginTop: '6px' }}>Benutzer & Rollen</h3>
       <div class="form-grid">
-        <label class="field"><span>Erlaubte Gruppen (leer = alle)</span><input class="input" value=${f.allowedGroups} onInput=${set('allowedGroups')} placeholder="rackbook-users" /></label>
+        <label class="field"><span>Erlaubte Gruppen (leer = alle; Admin- und Bearbeiter-Gruppen zählen automatisch dazu)</span><input class="input" value=${f.allowedGroups} onInput=${set('allowedGroups')} placeholder="rackbook-users" /></label>
         <label class="field"><span>Administrator-Gruppen</span><input class="input" value=${f.adminGroups} onInput=${set('adminGroups')} placeholder="rackbook-admins" /></label>
         <label class="field"><span>Bearbeiter-Gruppen</span><input class="input" value=${f.editorGroups} onInput=${set('editorGroups')} placeholder="rackbook-editors" /></label>
         <label class="field"><span>Rolle ohne passende Gruppe</span><select class="input" value=${f.defaultRole} onChange=${set('defaultRole')}><option value="viewer">Leser</option><option value="editor">Bearbeiter</option></select></label>

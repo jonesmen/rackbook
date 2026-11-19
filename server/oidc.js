@@ -173,8 +173,12 @@ export async function finishLogin(req, flow) {
   return { claims, issuer: client.serverMetadata().issuer, idToken: tokens.id_token };
 }
 
+// Gruppennamen ohne Rücksicht auf Groß-/Kleinschreibung und umgebende Leerzeichen vergleichen
+const gkey = g => String(g).trim().toLowerCase();
+const inAny = (wanted, groups) => { const have = new Set(groups.map(gkey)); return wanted.some(g => have.has(gkey(g))); };
+
 function roleFor(s, groups) {
-  const has = arr => arr.some(g => groups.includes(g));
+  const has = arr => inAny(arr, groups);
   if (s.adminGroups.length && has(s.adminGroups)) return 'admin';
   if (s.editorGroups.length && has(s.editorGroups)) return 'editor';
   return s.defaultRole;
@@ -189,8 +193,11 @@ export function resolveUser({ claims, issuer }) {
   if (!sub) throw new HttpError(401, 'Der Identity Provider hat keine Benutzer-ID (sub) geliefert.');
   const rawGroups = claimValue(claims, s.groupsClaim);
   const groups = (Array.isArray(rawGroups) ? rawGroups : rawGroups ? [rawGroups] : []).map(String);
-  if (s.allowedGroups.length && !s.allowedGroups.some(g => groups.includes(g))) {
-    throw new HttpError(403, 'Dein Konto ist für Rackbook nicht freigegeben (keine erlaubte Gruppe).');
+  // Zugelassen ist, wer in einer erlaubten Gruppe ist – Admin- und Bearbeiter-Gruppen zählen automatisch dazu.
+  if (s.allowedGroups.length && !inAny([...s.allowedGroups, ...s.adminGroups, ...s.editorGroups], groups)) {
+    // Zur Fehlersuche nennen, was der Identity Provider tatsächlich gemeldet hat
+    const got = groups.length ? `gemeldete Gruppen: ${groups.slice(0, 20).join(', ')}` : `der Identity Provider hat keine Gruppen gemeldet (Claim „${s.groupsClaim}“ fehlt – Scope „groups“ angefordert und für den Client freigegeben?)`;
+    throw new HttpError(403, `Dein Konto ist für Rackbook nicht freigegeben (keine erlaubte Gruppe; ${got}).`);
   }
   const role = roleFor(s, groups);
   const email = typeof claims.email === 'string' ? claims.email.slice(0, 200) : null;
